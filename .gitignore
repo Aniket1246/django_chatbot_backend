@@ -1,0 +1,44 @@
+# ---- Environment Files ----
+.env
+.env.*
+credentials.json
+
+# ---- Virtual Environments ----
+venv/
+ENV/
+env/
+.venv/
+venv*/
+venv310/
+
+# ---- Python Bytecode ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+
+# ---- Django Specific ----
+*.sqlite3
+db.sqlite3
+media/
+staticfiles/
+
+# ---- Node / React ----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
+
+# ---- Logs ----
+*.log
+
+# ---- VS Code ----
+.vscode/
+*.code-workspace
+
+# ---- System Files ----
+.DS_Store
+Thumbs.db
