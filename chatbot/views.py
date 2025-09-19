@@ -1,4 +1,6 @@
 import traceback
+import random
+from config.settings import BASE_DIR
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -29,6 +31,139 @@ from .calendar_client import (
     get_next_available_slots_for_user,
     send_enhanced_manual_invitations
 )
+
+# Domain mappings for mentors - Based on your actual mentor expertise
+DOMAIN_KEYWORDS = {
+    'marketing': ['marketing', 'digital marketing', 'seo', 'social media', 'content', 'campaigns', 'ads', 'promotion'],
+    'cv': ['cv', 'resume', 'curriculum vitae', 'profile', 'career document', 'job application'],
+    'linkedin': ['linkedin', 'professional network', 'social networking', 'profile optimization', 'connections'],
+    # Additional domains you might add later
+    'testing': ['test', 'qa', 'quality assurance', 'automation', 'selenium', 'cypress'],
+    'data': ['data', 'analytics', 'data science', 'machine learning', 'statistics', 'python', 'sql'],
+    'development': ['developer', 'programming', 'coding', 'software', 'web development', 'frontend', 'backend'],
+    'design': ['design', 'ui', 'ux', 'graphic', 'visual', 'creative', 'figma', 'photoshop'],
+    'finance': ['finance', 'accounting', 'investment', 'banking', 'financial analysis'],
+    'hr': ['hr', 'human resources', 'recruitment', 'talent', 'people management']
+}
+
+def detect_domain_from_message(message: str) -> str:
+    """
+    Detect the domain based on keywords in the user's message
+    Returns the domain name or 'general' if no specific domain detected
+    """
+    message_lower = message.lower()
+    
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in message_lower:
+                return domain
+    
+    return 'general'
+
+def get_random_mentor_by_domain(domain: str) -> Mentor:
+    """
+    Get a random mentor from the specified domain based on exact expertise match
+    If no mentors found in domain, return a random mentor from any domain
+    """
+    try:
+        print(f"🔍 Looking for mentors in domain: {domain}")
+        
+        # Direct expertise match (case insensitive)
+        domain_mentors = Mentor.objects.filter(
+            is_active=True,
+            expertise__iexact=domain
+        ).select_related('user')
+        
+        if domain_mentors.exists():
+            selected = random.choice(list(domain_mentors))
+            print(f"✅ Found {domain_mentors.count()} mentors for '{domain}', selected: {selected.user.username}")
+            return selected
+        
+        # If no exact match, try case-insensitive contains
+        domain_mentors = Mentor.objects.filter(
+            is_active=True,
+            expertise__icontains=domain
+        ).select_related('user')
+        
+        if domain_mentors.exists():
+            selected = random.choice(list(domain_mentors))
+            print(f"✅ Found {domain_mentors.count()} mentors containing '{domain}', selected: {selected.user.username}")
+            return selected
+        
+        # Try keyword-based search
+        for keyword in DOMAIN_KEYWORDS.get(domain, []):
+            keyword_mentors = Mentor.objects.filter(
+                is_active=True,
+                expertise__icontains=keyword
+            ).select_related('user')
+            
+            if keyword_mentors.exists():
+                selected = random.choice(list(keyword_mentors))
+                print(f"✅ Found {keyword_mentors.count()} mentors for keyword '{keyword}', selected: {selected.user.username}")
+                return selected
+        
+        # Fallback: return any active mentor
+        all_mentors = Mentor.objects.filter(is_active=True).select_related('user')
+        if all_mentors.exists():
+            selected = random.choice(list(all_mentors))
+            print(f"⚠️ No domain-specific mentor found, selected random: {selected.user.username}")
+            return selected
+        
+        print("❌ No active mentors found at all")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error getting mentor by domain: {e}")
+        # Fallback: return any active mentor
+        try:
+            all_mentors = Mentor.objects.filter(is_active=True).select_related('user')
+            if all_mentors.exists():
+                return random.choice(list(all_mentors))
+        except:
+            pass
+        return None
+
+def is_first_time_user(user):
+    """Check if user has any previous confirmed sessions"""
+    try:
+        previous_bookings = SessionBooking.objects.filter(
+            user=user, 
+            status='confirmed'
+        ).count()
+        
+        return previous_bookings == 0
+    except:
+        return True  # Assume first time if error
+
+def is_email_premium(email):
+    """Check if given email exists in premium_users.csv"""
+    csv_path = os.path.join(settings.BASE_DIR, "premium_users.csv")
+    try:
+        with open(csv_path, newline="") as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                if row["email"].strip().lower() == email.strip().lower():
+                    return True
+    except Exception as e:
+        print(f"Error reading premium_users.csv: {e}")
+    return False
+
+def is_email_allowed(email: str) -> bool:
+    """
+    Google Sheets ya CSV ke andar allowed emails check karega.
+    Abhi example CSV ke liye likha hai.
+    """
+    import csv, os
+    filepath = os.path.join(BASE_DIR, "registeredemail.csv")
+    try:
+        with open(filepath, newline='') as csvfile:
+            reader = csv.reader(csvfile)
+            allowed = [row[0].strip().lower() for row in reader]
+            return email.lower() in allowed
+    except Exception as e:
+        print("CSV read error:", e)
+        return False
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def test_email_send(request):
@@ -55,43 +190,13 @@ def test_email_send(request):
         
     except Exception as e:
         return Response({"error": str(e)}, status=500)
-   # Add this function at the top of views.py after imports
-def is_first_time_user(user):
-    """Check if user has any previous confirmed sessions"""
-    try:
-        # Check if user has any previous bookings
-        previous_bookings = SessionBooking.objects.filter(
-            user=user, 
-            status='confirmed'
-        ).count()
-        
-        return previous_bookings == 0
-    except:
-        return True  # Assume first time if error
-     
-# ---------------- Utility for Premium Check ----------------
-def is_email_premium(email):
-    """Check if given email exists in premium_users.csv"""
-    csv_path = os.path.join(settings.BASE_DIR, "premium_users.csv")
-    try:
-        with open(csv_path, newline="") as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                if row["email"].strip().lower() == email.strip().lower():
-                    return True
-    except Exception as e:
-        print(f"Error reading premium_users.csv: {e}")
-    return False
 
-
-# ---------------- Signup ----------------
 @method_decorator(csrf_exempt, name="dispatch")
 class SignupView(APIView):
-    permission_classes = [AllowAny]  # Explicitly allow unauthenticated access
-    
+    permission_classes = [AllowAny]
+
     def post(self, request):
         try:
-            # Handle both JSON and form data
             if request.content_type == 'application/json':
                 data = json.loads(request.body)
             else:
@@ -99,37 +204,29 @@ class SignupView(APIView):
 
             email = data.get("email")
             password = data.get("password")
+            username = data.get("username")
 
             if not email or not password:
-                return Response({
-                    "error": "Email and password are required"
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "Email and password are required"},
+                                status=status.HTTP_400_BAD_REQUEST)
 
-            # Check if user exists
-            if User.objects.filter(username=email).exists():
+            # ✅ Allowed email check
+            if not is_email_allowed(email):
                 return Response({
-                    "error": "User already exists"
-                }, status=status.HTTP_400_BAD_REQUEST)
+                    "error": "This email is not allowed to signup. Please contact support."
+                }, status=status.HTTP_403_FORBIDDEN)
 
-            # Create user
+            if User.objects.filter(email=email).exists():
+                return Response({"error": "User already exists"},
+                                status=status.HTTP_400_BAD_REQUEST)
+
             user = User.objects.create_user(
-                username=email,
+                username=username,
                 email=email,
                 password=password
             )
 
-            # Check premium from CSV
-            premium_status = is_email_premium(email)
-
-            # Create UserProfile
-            UserProfile.objects.create(
-                user=user,
-                email=email,
-                is_premium=premium_status
-            )
-
-            # Create token
-            token, created = Token.objects.get_or_create(user=user)
+            token, _ = Token.objects.get_or_create(user=user)
 
             return Response({
                 "message": "User created successfully",
@@ -138,17 +235,12 @@ class SignupView(APIView):
                     "id": user.id,
                     "email": user.email,
                     "username": user.username,
-                    "is_premium": premium_status
                 }
             }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            return Response({
-                "error": f"Failed to create user: {str(e)}"
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-# ---------------- Login ----------------
 @method_decorator(csrf_exempt, name="dispatch")
 class LoginView(APIView):
     permission_classes = [AllowAny]
@@ -181,8 +273,6 @@ class LoginView(APIView):
             }
         }, status=200)
 
-
-# ---------------- Logout ----------------
 @method_decorator(csrf_exempt, name="dispatch")  
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
@@ -198,8 +288,6 @@ class LogoutView(APIView):
                 "error": "Logout failed"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-# ---------------- Test View (for debugging) ----------------
 @method_decorator(csrf_exempt, name="dispatch")
 class TestView(APIView):
     permission_classes = [AllowAny]
@@ -218,8 +306,6 @@ class TestView(APIView):
             "user_authenticated": request.user.is_authenticated
         })
 
-
-# ---------------- User Profile ----------------
 class UserProfileView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -268,19 +354,6 @@ def list_mentors(request):
     ]
     return Response(data, status=200)
 
-
-# ---------------- Schedule (Secured) ----------------
-# chatbot/views.py
-# chatbot/views.py
-
-# ---------------- Schedule (Secured) ----------------
-# Replace your ScheduleView class with this fixed version:
-
-
-
-# In your ScheduleView class, update the post method to send emails after booking
-
-# In your ScheduleView class, update the post method to fix the date/time and email issues
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def test_email_config(request):
@@ -368,9 +441,6 @@ UK Jobs Team
         traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
-
-# Fixed ScheduleView with proper email handling
-# Update your ScheduleView class
 class ScheduleView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -382,23 +452,39 @@ class ScheduleView(APIView):
             data = request.data
             mentor_id = data.get("mentor_id")
             selected_slot = data.get("selected_slot")
+            domain = data.get("domain")
+            auto_select = data.get("auto_select", False)
+            auto_book = data.get("auto_book", False)
 
             profile, _ = UserProfile.objects.get_or_create(user=request.user)
 
             if not profile.is_premium:
                 return Response({"error": "Only premium users can book sessions."}, status=403)
 
-            if not mentor_id:
-                return Response({"error": "mentor_id is required"}, status=400)
+            # Auto-select mentor based on domain
+            if auto_select and domain:
+                selected_mentor = get_random_mentor_by_domain(domain)
+                if not selected_mentor:
+                    return Response({"error": f"No mentors available for {domain} domain"}, status=404)
+                
+                mentor_id = selected_mentor.id
+                print(f"🎯 [AUTO-SELECT] Selected {selected_mentor.user.username} for {domain} domain")
 
-            # ---------------- HEAD MENTOR BOOKING ----------------
- # 🔥 HANDLE HEAD MENTOR BOOKING (First Time Users)
+            # Handle head mentor booking
             if mentor_id == "head":
                 head_email = "sunilramtri000@gmail.com"
                 available_slots = get_next_available_slots_for_user(head_email, count=3)
 
                 if not available_slots:
                     return Response({"error": "No available slots found"}, status=500)
+
+                # AUTO-BOOK LOGIC FOR HEAD MENTOR
+                if auto_book and available_slots:
+                    selected_slot = {
+                        "start_time": available_slots[0]["start_time"].isoformat(),  # FIXED: Convert to string
+                        "end_time": available_slots[0]["end_time"].isoformat()       # FIXED: Convert to string
+                    }
+                    print(f"🎯 [AUTO-BOOK] Selected first available head mentor slot: {selected_slot['start_time']}")
 
                 if selected_slot:
                     try:
@@ -420,11 +506,9 @@ class ScheduleView(APIView):
                                 start_time=result["start_time"],
                                 end_time=result["end_time"],
                                 meet_link=result["meet_link"],
-                                # calendar_event_id=result["event_id"],
                                 status="confirmed"
                             )
 
-                            # Invitations bhejna
                             send_enhanced_manual_invitations(
                                 attendees=[request.user.email, head_email],
                                 meet_link=result.get("meet_link"),
@@ -448,8 +532,8 @@ class ScheduleView(APIView):
                                 "calendar_link": result.get("calendar_link"),
                                 "start_time": result["start_time"].isoformat(),
                                 "end_time": result["end_time"].isoformat(),
-                                "mentor_name": "Sunil (Head Mentor)",   # 👈 sirf response me
-                                "mentor_email": head_email,             # 👈 sirf response me
+                                "mentor_name": "Sunil (Head Mentor)",
+                                "mentor_email": head_email,
                                 "session_count": profile.session_count
                             }, status=200)
 
@@ -459,7 +543,6 @@ class ScheduleView(APIView):
                         traceback.print_exc()
                         return Response({"error": f"Error processing selected slot: {str(e)}"}, status=500)
 
-                # Agar slot select nahi hua hai → slots dikhana
                 return Response({
                     "available_slots": [
                         {
@@ -474,11 +557,25 @@ class ScheduleView(APIView):
                     "mentor_name": "Sunil (Head Mentor)"
                 }, status=200)
 
+            # Handle regular mentors
+            if not mentor_id:
+                return Response({"error": "mentor_id is required"}, status=400)
 
-            # ---------------- REGULAR MENTORS ----------------
             mentor = Mentor.objects.filter(id=mentor_id, is_active=True).select_related("user").first()
             if not mentor:
                 return Response({"error": "Invalid or inactive mentor"}, status=400)
+
+            available_slots = get_next_available_slots_for_user(mentor.user.email, count=3)
+            if not available_slots:
+                return Response({"error": "No available slots found. Please try again later."}, status=500)
+
+            # AUTO-BOOK LOGIC FOR REGULAR MENTORS
+            if auto_book and available_slots:
+                selected_slot = {
+                    "start_time": available_slots[0]["start_time"].isoformat(),  # FIXED: Convert to string
+                    "end_time": available_slots[0]["end_time"].isoformat()       # FIXED: Convert to string
+                }
+                print(f"🎯 [AUTO-BOOK] Selected first available slot: {selected_slot['start_time']}")
 
             if selected_slot:
                 try:
@@ -531,14 +628,15 @@ class ScheduleView(APIView):
 
                         return Response({
                             "success": True,
-                            "message": f"✅ Session booked for {result['start_time'].strftime('%A, %B %d at %I:%M %p')} IST!",
+                            "message": f"✅ Session booked with {mentor.user.username} for {result['start_time'].strftime('%A, %B %d at %I:%M %p')} IST!",
                             "booking_id": booking.id,
                             "meet_link": result["meet_link"],
                             "calendar_link": result.get("calendar_link"),
                             "start_time": result["start_time"].isoformat(),
                             "end_time": result["end_time"].isoformat(),
                             "mentor_name": mentor.user.username,
-                            "session_count": profile.session_count
+                            "session_count": profile.session_count,
+                            "domain": domain if domain else "general"
                         }, status=200)
                     else:
                         return Response({"error": result.get("error", "Booking failed")}, status=500)
@@ -546,11 +644,6 @@ class ScheduleView(APIView):
                 except Exception as e:
                     traceback.print_exc()
                     return Response({"error": f"Error processing selected slot: {str(e)}"}, status=500)
-
-            # Else return available slots for mentor
-            available_slots = get_next_available_slots_for_user(mentor.user.email, count=3)
-            if not available_slots:
-                return Response({"error": "No available slots found. Please try again later."}, status=500)
 
             return Response({
                 "available_slots": [
@@ -563,16 +656,14 @@ class ScheduleView(APIView):
                     for slot in available_slots
                 ],
                 "message": f"📅 Available slots with {mentor.user.username}. Please confirm one.",
-                "mentor_name": mentor.user.username
+                "mentor_name": mentor.user.username,
+                "mentor_domain": domain if domain else "general"
             }, status=200)
 
         except Exception as e:
             traceback.print_exc()
             return Response({"error": str(e)}, status=500)
 
-
-        
-# Optional: Add a view to check available slots
 class AvailableSlotsView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -612,66 +703,6 @@ class AvailableSlotsView(APIView):
                 "error": "Could not fetch available slots"
             }, status=500)
 
-
-            # -------- NEXT SESSIONS (Mentors) --------
-            if not mentor_id:
-                return Response({"error": "mentor_id is required for next sessions"}, status=400)
-
-            mentor = Mentor.objects.filter(id=mentor_id, is_active=True).select_related("user").first()
-            if not mentor:
-                return Response({"error": "Invalid mentor"}, status=400)
-
-            from .calendar_client import find_next_available_slot, create_event, send_manual_invitations
-            start_time, end_time = find_next_available_slot(duration)
-
-            attendees = [booking_user.email, mentor.user.email]
-            cal_event = create_event(
-                summary=f"1-on-1 Session with {mentor.user.username}",
-                description=f"Mentorship session with {mentor.user.username}",
-                start_time_ist=start_time,
-                end_time_ist=end_time,
-                attendees=attendees
-            )
-            send_manual_invitations(attendees, cal_event["meet_link"], cal_event["calendar_link"], start_time, end_time)
-
-            booking = SessionBooking.objects.create(
-                 user=request.user,
-                organizer=organizer_user.username,
-                start_time=result.get("start_time"),
-                end_time=result.get("end_time"),
-                meet_link=result.get("meet_link"),
-                calendar_link=result.get("calendar_link", ""),  # safe default empty string
-                attendees=attendees_value,
-                mentor=mentor_obj,
-                status="confirmed"
-)
-
-
-            return Response({
-                "success": True,
-                "message": f"✅ Session booked with {mentor.user.username} for {start_time.strftime('%I:%M %p')} IST!",
-                "meet_link": cal_event["meet_link"],
-                "calendar_link": cal_event["calendar_link"],
-                "start_time_ist": start_time.isoformat(),
-                "end_time_ist": end_time.isoformat(),
-                "attendees": attendees,
-                "mentor": mentor.user.username,
-                "booking_id": booking.id
-            })
-
-        except Exception as e:
-            traceback.print_exc()
-            return Response({"error": str(e)}, status=500)
-
-
-
-
-
-# ---------------- Chat (Secured) ----------------
-# views.py
-from .utils import is_meeting_request, extract_duration
-from .gemini_client import ask_gemini
-
 class ChatView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -694,11 +725,13 @@ class ChatView(APIView):
                         "mentors": None
                     }, status=200)
                 
-                # 🔥 CHECK IF FIRST TIME USER
+                # NEW FEATURE: Detect domain from message
+                detected_domain = detect_domain_from_message(message)
+                
                 if is_first_time_user(request.user):
                     # First time user - show head mentor only
                     head_mentor = {
-                        "id": "head",  # Special ID
+                        "id": "head",
                         "username": "Sunil (Head Mentor)",
                         "email": "sunilramtri000@gmail.com",
                         "expertise": "Initial Assessment & Career Guidance"
@@ -707,11 +740,32 @@ class ChatView(APIView):
                     return Response({
                         "reply": "🎯 Welcome! As a first-time premium user, your initial session will be with our Head Mentor for assessment and guidance. Please select to continue:",
                         "mentors": [head_mentor],
-                        "is_first_time": True
+                        "is_first_time": True,
+                        "detected_domain": detected_domain
                     }, status=200)
                 
                 else:
-                    # Returning user - show all mentors
+                    # NEW: If domain detected, auto-select mentor
+                    if detected_domain != 'general':
+                        selected_mentor = get_random_mentor_by_domain(detected_domain)
+                        
+                        if selected_mentor:
+                            # Return auto-selected mentor with domain info
+                            return Response({
+                                "reply": f"🎯 I detected you're interested in {detected_domain.title()} domain. I've selected {selected_mentor.user.username} as your mentor specialist for this area.",
+                                "mentors": [{
+                                    "id": selected_mentor.id,
+                                    "username": selected_mentor.user.username,
+                                    "email": selected_mentor.user.email,
+                                    "expertise": selected_mentor.expertise
+                                }],
+                                "is_first_time": False,
+                                "detected_domain": detected_domain,
+                                "auto_selected": True,
+                                "auto_mentor_id": selected_mentor.id
+                            }, status=200)
+                    
+                    # Fallback: show all mentors
                     mentors = Mentor.objects.filter(is_active=True).select_related("user")
                     mentor_list = [
                         {
@@ -726,7 +780,8 @@ class ChatView(APIView):
                     return Response({
                         "reply": "📅 I can help you schedule a mentorship session. Please select a mentor:",
                         "mentors": mentor_list,
-                        "is_first_time": False
+                        "is_first_time": False,
+                        "detected_domain": detected_domain
                     }, status=200)
 
             # Default AI chat
@@ -736,3 +791,52 @@ class ChatView(APIView):
         except Exception as e:
             traceback.print_exc()
             return Response({"error": str(e)}, status=500)
+
+# Add new endpoint to get mentors by domain
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_mentors_by_domain(request):
+    """Get mentors filtered by domain"""
+    try:
+        domain = request.GET.get('domain', 'general')
+        
+        profile = UserProfile.objects.filter(user=request.user).first()
+        if not profile or not profile.is_premium:
+            return Response({"error": "Only premium users can access mentors"}, status=403)
+        
+        if domain == 'general':
+            mentors = Mentor.objects.filter(is_active=True).select_related("user")
+        else:
+            # Filter by domain keywords
+            mentors = Mentor.objects.filter(is_active=True).select_related("user")
+            domain_mentors = []
+            
+            for mentor in mentors:
+                expertise_lower = mentor.expertise.lower() if mentor.expertise else ""
+                keywords = DOMAIN_KEYWORDS.get(domain, [])
+                
+                if any(keyword in expertise_lower for keyword in keywords):
+                    domain_mentors.append(mentor)
+            
+            mentors = domain_mentors
+
+        mentor_list = [
+            {
+                "id": m.id,
+                "username": m.user.username,
+                "email": m.user.email,
+                "expertise": m.expertise,
+                "domain": domain
+            }
+            for m in mentors
+        ]
+        
+        return Response({
+            "mentors": mentor_list,
+            "domain": domain,
+            "count": len(mentor_list)
+        }, status=200)
+        
+    except Exception as e:
+        print(f"Error getting mentors by domain: {e}")
+        return Response({"error": str(e)}, status=500)
