@@ -2,7 +2,7 @@
 .env
 .env.*
 credentials.json
-
+credentials1.json
 # ---- Virtual Environments ----
 venv/
 ENV/
