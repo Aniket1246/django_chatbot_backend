@@ -133,33 +133,30 @@ def is_first_time_user(user):
     except:
         return True  # Assume first time if error
 
-def is_email_premium(email):
-    """Check if given email exists in premium_users.csv"""
-    csv_path = os.path.join(settings.BASE_DIR, "premium_users.csv")
+def get_user_data(email: str) -> dict | None:
+    """Get user data from the consolidated users.csv file"""
+    csv_path = os.path.join(settings.BASE_DIR, "users.csv")
     try:
         with open(csv_path, newline="") as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
                 if row["email"].strip().lower() == email.strip().lower():
-                    return True
+                    return {
+                        "email": row["email"].strip(),
+                        "type": row["type"].strip().lower()  # Ensure consistent case
+                    }
     except Exception as e:
-        print(f"Error reading premium_users.csv: {e}")
-    return False
+        print(f"Error reading users.csv: {e}")
+    return None
 
 def is_email_allowed(email: str) -> bool:
-    """
-    Google Sheets ya CSV ke andar allowed emails check karega.
-    Abhi example CSV ke liye likha hai.
-    """
-    filepath = os.path.join(BASE_DIR, "registeredemail.csv")
-    try:
-        with open(filepath, newline='') as csvfile:
-            reader = csv.reader(csvfile)
-            allowed = [row[0].strip().lower() for row in reader]
-            return email.lower() in allowed
-    except Exception as e:
-        print("CSV read error:", e)
-        return False
+    """Check if email exists in users.csv"""
+    return get_user_data(email) is not None
+
+def is_email_premium(email: str) -> bool:
+    """Check if email has premium status in users.csv"""
+    user_data = get_user_data(email)
+    return user_data and user_data["type"] == "premium"
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -204,7 +201,7 @@ class SignupView(APIView):
                 return Response({"error": "Email and password are required"},
                                 status=status.HTTP_400_BAD_REQUEST)
 
-            # ✅ Allowed email check
+            # Check if email is allowed
             if not is_email_allowed(email):
                 return Response({
                     "error": "This email is not allowed to signup. Please contact support."
@@ -220,6 +217,15 @@ class SignupView(APIView):
                 password=password
             )
 
+            # Create UserProfile with correct type
+            user_data = get_user_data(email)
+            is_premium = user_data and user_data["type"] == "premium"
+            
+            UserProfile.objects.create(
+                user=user,
+                is_premium=is_premium
+            )
+
             token, _ = Token.objects.get_or_create(user=user)
 
             return Response({
@@ -229,6 +235,7 @@ class SignupView(APIView):
                     "id": user.id,
                     "email": user.email,
                     "username": user.username,
+                    "is_premium": is_premium
                 }
             }, status=status.HTTP_201_CREATED)
 
@@ -255,6 +262,16 @@ class LoginView(APIView):
         if not user.check_password(password):
             return Response({"error": "Invalid email or password"}, status=401)
 
+        # Sync premium status with CSV
+        user_data = get_user_data(email)
+        is_premium = user_data and user_data["type"] == "premium"
+        
+        # Update UserProfile if exists
+        profile, created = UserProfile.objects.get_or_create(user=user)
+        if profile.is_premium != is_premium:
+            profile.is_premium = is_premium
+            profile.save()
+
         token, _ = Token.objects.get_or_create(user=user)
         return Response({
             "message": "Login successful",
@@ -263,7 +280,7 @@ class LoginView(APIView):
                 "id": user.id,
                 "email": user.email,
                 "username": user.username,
-                "is_premium": getattr(user, "userprofile", None).is_premium if hasattr(user, "userprofile") else False
+                "is_premium": is_premium
             }
         }, status=200)
 
@@ -306,7 +323,15 @@ class UserProfileView(APIView):
 
     def get(self, request):
         try:
-            profile = UserProfile.objects.get(user=request.user)
+            # Sync with CSV to ensure latest status
+            user_data = get_user_data(request.user.email)
+            is_premium = user_data and user_data["type"] == "premium"
+            
+            profile, created = UserProfile.objects.get_or_create(user=request.user)
+            if profile.is_premium != is_premium:
+                profile.is_premium = is_premium
+                profile.save()
+            
             return Response({
                 "user": {
                     "id": request.user.id,
