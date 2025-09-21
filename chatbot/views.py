@@ -23,7 +23,6 @@ import csv
 import os
 from django.conf import settings
 from .gemini_client import ask_gemini
-import json
 from .utils import is_meeting_request, extract_duration
 from datetime import datetime, timedelta
 from .calendar_client import (
@@ -37,7 +36,6 @@ DOMAIN_KEYWORDS = {
     'marketing': ['marketing', 'digital marketing', 'seo', 'social media', 'content', 'campaigns', 'ads', 'promotion'],
     'cv': ['cv', 'resume', 'curriculum vitae', 'profile', 'career document', 'job application'],
     'linkedin': ['linkedin', 'professional network', 'social networking', 'profile optimization', 'connections'],
-    # Additional domains you might add later
     'testing': ['test', 'qa', 'quality assurance', 'automation', 'selenium', 'cypress'],
     'data': ['data', 'analytics', 'data science', 'machine learning', 'statistics', 'python', 'sql'],
     'development': ['developer', 'programming', 'coding', 'software', 'web development', 'frontend', 'backend'],
@@ -153,7 +151,6 @@ def is_email_allowed(email: str) -> bool:
     Google Sheets ya CSV ke andar allowed emails check karega.
     Abhi example CSV ke liye likha hai.
     """
-    import csv, os
     filepath = os.path.join(BASE_DIR, "registeredemail.csv")
     try:
         with open(filepath, newline='') as csvfile:
@@ -169,9 +166,6 @@ def is_email_allowed(email: str) -> bool:
 def test_email_send(request):
     """Test email sending functionality"""
     try:
-        from .calendar_client import send_enhanced_manual_invitations
-        from datetime import datetime, timedelta
-        
         success = send_enhanced_manual_invitations(
             attendees=[request.user.email, "test@example.com"],
             meet_link="https://meet.google.com/test",
@@ -359,8 +353,6 @@ def list_mentors(request):
 def test_email_config(request):
     """Test email configuration with detailed debugging"""
     try:
-        from django.core.mail import send_mail
-        from django.conf import settings
         import smtplib
         
         print("📧 [EMAIL TEST] Starting email configuration test...")
@@ -455,214 +447,226 @@ class ScheduleView(APIView):
             domain = data.get("domain")
             auto_select = data.get("auto_select", False)
             auto_book = data.get("auto_book", False)
+            preferred_day = data.get("preferred_day")
 
             profile, _ = UserProfile.objects.get_or_create(user=request.user)
 
             if not profile.is_premium:
                 return Response({"error": "Only premium users can book sessions."}, status=403)
 
-            # Auto-select mentor based on domain
-            if auto_select and domain:
-                selected_mentor = get_random_mentor_by_domain(domain)
-                if not selected_mentor:
-                    return Response({"error": f"No mentors available for {domain} domain"}, status=404)
-                
-                mentor_id = selected_mentor.id
-                print(f"🎯 [AUTO-SELECT] Selected {selected_mentor.user.username} for {domain} domain")
-
             # Handle head mentor booking
             if mentor_id == "head":
                 head_email = "sunilramtri000@gmail.com"
-                available_slots = get_next_available_slots_for_user(head_email, count=3)
+                
+                # Get available slots with day filter if provided
+                if preferred_day:
+                    available_slots = self.get_slots_for_specific_day(head_email, preferred_day)
+                else:
+                    available_slots = get_next_available_slots_for_user(head_email, count=1)
 
                 if not available_slots:
-                    return Response({"error": "No available slots found"}, status=500)
+                    return Response({
+                        "error": "No available slots found",
+                        "show_day_filter": True,
+                        "available_days": self.get_available_days(head_email)
+                    }, status=200)
 
-                # AUTO-BOOK LOGIC FOR HEAD MENTOR
-                if auto_book and available_slots:
-                    selected_slot = {
-                        "start_time": available_slots[0]["start_time"].isoformat(),  # FIXED: Convert to string
-                        "end_time": available_slots[0]["end_time"].isoformat()       # FIXED: Convert to string
-                    }
-                    print(f"🎯 [AUTO-BOOK] Selected first available head mentor slot: {selected_slot['start_time']}")
-
+                earliest_slot = available_slots[0]
+                
+                # If user already confirmed a slot, book it
                 if selected_slot:
-                    try:
-                        slot_start = parse_datetime(selected_slot["start_time"])
-                        slot_end = parse_datetime(selected_slot["end_time"])
-
-                        result = schedule_specific_slot(
-                            student_email=request.user.email,
-                            mentor_email=head_email,
-                            slot_start=slot_start,
-                            slot_end=slot_end,
-                            student_name=request.user.username,
-                            mentor_name="Sunil (Head Mentor)"
-                        )
-
-                        if result["success"]:
-                            booking = SessionBooking.objects.create(
-                                user=request.user,
-                                start_time=result["start_time"],
-                                end_time=result["end_time"],
-                                meet_link=result["meet_link"],
-                                status="confirmed"
-                            )
-
-                            send_enhanced_manual_invitations(
-                                attendees=[request.user.email, head_email],
-                                meet_link=result.get("meet_link"),
-                                calendar_link=result.get("calendar_link"),
-                                start_time=result.get("start_time"),
-                                end_time=result.get("end_time"),
-                                organizer_email=head_email,
-                                student_name=request.user.username,
-                                mentor_name="Sunil (Head Mentor)",
-                                session_type="Head Mentor Session"
-                            )
-
-                            profile.session_count += 1
-                            profile.save()
-
-                            return Response({
-                                "success": True,
-                                "message": f"✅ Session booked for {result['start_time'].strftime('%A, %B %d at %I:%M %p')} IST!",
-                                "booking_id": booking.id,
-                                "meet_link": result["meet_link"],
-                                "calendar_link": result.get("calendar_link"),
-                                "start_time": result["start_time"].isoformat(),
-                                "end_time": result["end_time"].isoformat(),
-                                "mentor_name": "Sunil (Head Mentor)",
-                                "mentor_email": head_email,
-                                "session_count": profile.session_count
-                            }, status=200)
-
-                        return Response({"error": result.get("error", "Booking failed")}, status=500)
-
-                    except Exception as e:
-                        traceback.print_exc()
-                        return Response({"error": f"Error processing selected slot: {str(e)}"}, status=500)
-
-                return Response({
-                    "available_slots": [
-                        {
-                            "start_time": slot["start_time"].isoformat(),
-                            "end_time": slot["end_time"].isoformat(),
-                            "formatted_date": slot["formatted_date"],
-                            "formatted_time": slot["formatted_time"]
-                        }
-                        for slot in available_slots
-                    ],
-                    "message": "📅 Available slots with Head Mentor. Please confirm one.",
-                    "mentor_name": "Sunil (Head Mentor)"
-                }, status=200)
-
-            # Handle regular mentors
-            if not mentor_id:
-                return Response({"error": "mentor_id is required"}, status=400)
-
-            mentor = Mentor.objects.filter(id=mentor_id, is_active=True).select_related("user").first()
-            if not mentor:
-                return Response({"error": "Invalid or inactive mentor"}, status=400)
-
-            available_slots = get_next_available_slots_for_user(mentor.user.email, count=3)
-            if not available_slots:
-                return Response({"error": "No available slots found. Please try again later."}, status=500)
-
-            # AUTO-BOOK LOGIC FOR REGULAR MENTORS
-            if auto_book and available_slots:
-                selected_slot = {
-                    "start_time": available_slots[0]["start_time"].isoformat(),  # FIXED: Convert to string
-                    "end_time": available_slots[0]["end_time"].isoformat()       # FIXED: Convert to string
-                }
-                print(f"🎯 [AUTO-BOOK] Selected first available slot: {selected_slot['start_time']}")
-
-            if selected_slot:
-                try:
-                    slot_start = parse_datetime(selected_slot["start_time"])
-                    slot_end = parse_datetime(selected_slot["end_time"])
-                    if not slot_start or not slot_end:
-                        return Response({"error": "Invalid datetime format in selected_slot"}, status=400)
-
-                    result = schedule_specific_slot(
-                        student_email=request.user.email,
-                        mentor_email=mentor.user.email,
-                        slot_start=slot_start,
-                        slot_end=slot_end,
-                        student_name=request.user.username,
-                        mentor_name=mentor.user.username
+                    return self.confirm_booking(
+                        request.user, 
+                        head_email, 
+                        "Sunil (Head Mentor)",
+                        selected_slot,
+                        profile
                     )
 
-                    if result["success"]:
-                        booking = SessionBooking.objects.create(
-                            user=request.user,
-                            mentor=mentor,
-                            organizer="UK Jobs Mentorship System",
-                            start_time=result["start_time"],
-                            end_time=result["end_time"],
-                            meet_link=result["meet_link"],
-                            calendar_link=result.get("calendar_link", ""),
-                            attendees=[request.user.email, mentor.user.email],
-                            event_id=result["event_id"],
-                            status="confirmed"
-                        )
+                # Show earliest slot with yes/no confirmation
+                return Response({
+                    "message": f"Your earliest available slot with Head Mentor is:",
+                    "earliest_slot": {
+                        "start_time": earliest_slot["start_time"].isoformat(),
+                        "end_time": earliest_slot["end_time"].isoformat(),
+                        "formatted_date": earliest_slot["formatted_date"],
+                        "formatted_time": earliest_slot["formatted_time"]
+                    },
+                    "mentor_name": "Sunil (Head Mentor)",
+                    "requires_confirmation": True,
+                    "show_day_filter": True,
+                    "available_days": self.get_available_days(head_email) if not preferred_day else None
+                }, status=200)
 
-                        try:
-                            send_enhanced_manual_invitations(
-                                attendees=[request.user.email, mentor.user.email],
-                                meet_link=result.get("meet_link"),
-                                calendar_link=result.get("calendar_link"),
-                                start_time=result.get("start_time"),
-                                end_time=result.get("end_time"),
-                                organizer_email="sunilramtri000@gmail.com",
-                                student_name=request.user.username,
-                                mentor_name=mentor.user.username,
-                                session_type="1-on-1 Mentorship"
-                            )
-                            print("✅ [DEBUG] Email invitations sent")
-                        except Exception as mail_err:
-                            print("❌ [ERROR] Email failed:", mail_err)
+            # Handle domain-based mentor selection
+            if not domain:
+                return Response({"error": "domain is required"}, status=400)
 
-                        profile.session_count += 1
-                        profile.save()
+            selected_mentor = get_random_mentor_by_domain(domain)
+            if not selected_mentor:
+                return Response({
+                    "error": f"No mentors available for {domain} domain",
+                    "available_domains": list(DOMAIN_KEYWORDS.keys())
+                }, status=404)
 
-                        return Response({
-                            "success": True,
-                            "message": f"✅ Session booked with {mentor.user.username} for {result['start_time'].strftime('%A, %B %d at %I:%M %p')} IST!",
-                            "booking_id": booking.id,
-                            "meet_link": result["meet_link"],
-                            "calendar_link": result.get("calendar_link"),
-                            "start_time": result["start_time"].isoformat(),
-                            "end_time": result["end_time"].isoformat(),
-                            "mentor_name": mentor.user.username,
-                            "session_count": profile.session_count,
-                            "domain": domain if domain else "general"
-                        }, status=200)
-                    else:
-                        return Response({"error": result.get("error", "Booking failed")}, status=500)
+            print(f"🎯 [DOMAIN-BASED] Selected mentor for {domain} domain")
 
-                except Exception as e:
-                    traceback.print_exc()
-                    return Response({"error": f"Error processing selected slot: {str(e)}"}, status=500)
+            # Get available slots with day filter if provided
+            if preferred_day:
+                available_slots = self.get_slots_for_specific_day(selected_mentor.user.email, preferred_day)
+            else:
+                available_slots = get_next_available_slots_for_user(selected_mentor.user.email, count=1)
 
+            if not available_slots:
+                return Response({
+                    "error": "No available slots found for this day",
+                    "show_day_filter": True,
+                    "available_days": self.get_available_days(selected_mentor.user.email),
+                    "domain": domain.title()
+                }, status=200)
+
+            earliest_slot = available_slots[0]
+            
+            # If user already confirmed a slot, book it
+            if selected_slot:
+                return self.confirm_booking(
+                    request.user, 
+                    selected_mentor.user.email, 
+                    f"{domain.title()} Expert",
+                    selected_slot,
+                    profile,
+                    selected_mentor
+                )
+
+            # Show earliest slot with yes/no confirmation
             return Response({
-                "available_slots": [
-                    {
-                        "start_time": slot["start_time"].isoformat(),
-                        "end_time": slot["end_time"].isoformat(),
-                        "formatted_date": slot["formatted_date"],
-                        "formatted_time": slot["formatted_time"]
-                    }
-                    for slot in available_slots
-                ],
-                "message": f"📅 Available slots with {mentor.user.username}. Please confirm one.",
-                "mentor_name": mentor.user.username,
-                "mentor_domain": domain if domain else "general"
+                "message": f"Your earliest available slot for {domain.title()} mentorship is:",
+                "earliest_slot": {
+                    "start_time": earliest_slot["start_time"].isoformat(),
+                    "end_time": earliest_slot["end_time"].isoformat(),
+                    "formatted_date": earliest_slot["formatted_date"],
+                    "formatted_time": earliest_slot["formatted_time"]
+                },
+                "domain": domain.title(),
+                "domain_description": self.get_domain_description(domain),
+                "requires_confirmation": True,
+                "show_day_filter": True,
+                "available_days": self.get_available_days(selected_mentor.user.email),
+                "selected_mentor_id": selected_mentor.id
             }, status=200)
 
         except Exception as e:
             traceback.print_exc()
             return Response({"error": str(e)}, status=500)
+
+    def get_available_days(self, email):
+        """Get list of days in next 7 days that have available slots"""
+        from .calendar_client import get_available_days_for_user
+        return get_available_days_for_user(email, max_days=7)
+
+    def get_slots_for_specific_day(self, email, day_name):
+        """Get available slots for a specific day"""
+        from .calendar_client import get_slots_for_specific_day_helper
+        return get_slots_for_specific_day_helper(email, day_name)
+
+    def get_domain_description(self, domain):
+        """Get user-friendly description for domain"""
+        descriptions = {
+            'marketing': 'Digital Marketing & Growth Strategies',
+            'cv': 'CV Writing & Career Documents', 
+            'linkedin': 'LinkedIn Profile Optimization',
+            'testing': 'QA & Test Automation',
+            'data': 'Data Science & Analytics',
+            'development': 'Software Development',
+            'design': 'UI/UX Design',
+            'finance': 'Finance & Investment',
+            'hr': 'HR & Recruitment',
+            'general': 'General Career Guidance'
+        }
+        return descriptions.get(domain, f'{domain.title()} Expertise')
+
+    def confirm_booking(self, user, mentor_email, display_name, selected_slot, profile, mentor=None):
+        """Confirm and create the booking with domain-based display"""
+        try:
+            slot_start = parse_datetime(selected_slot["start_time"])
+            slot_end = parse_datetime(selected_slot["end_time"])
+            
+            if not slot_start or not slot_end:
+                return Response({"error": "Invalid datetime format in selected_slot"}, status=400)
+
+            result = schedule_specific_slot(
+                student_email=user.email,
+                mentor_email=mentor_email,
+                slot_start=slot_start,
+                slot_end=slot_end,
+                student_name=user.username,
+                mentor_name=display_name
+            )
+
+            if result["success"]:
+                booking = SessionBooking.objects.create(
+                    user=user,
+                    mentor=mentor,
+                    organizer="UK Jobs Mentorship System",
+                    start_time=result["start_time"],
+                    end_time=result["end_time"],
+                    meet_link=result["meet_link"],
+                    attendees=[user.email, mentor_email],
+                    event_id=result["event_id"],
+                    status="confirmed"
+                )
+
+# Send email with calendar invite to both mentor & user
+ # Send email with calendar invite to both mentor & user
+                description = f"1-on-1 mentorship session with {display_name}"
+
+                student_email = user.email
+                student_name = user.username
+                mentor_name = display_name  # or mentor.user.username if available
+
+                send_success = send_enhanced_manual_invitations(
+                    attendees=[student_email, mentor_email],
+                    meet_link=result["meet_link"],
+                    start_time=result["start_time"],
+                    end_time=result["end_time"],
+                    student_name=student_name,
+                    mentor_name=mentor_name,
+                    session_type="1-on-1 Mentorship"
+                )
+
+                if send_success:
+                    print("✅ Calendar invite sent to both mentor and user")
+                else:
+                    print("❌ Failed to send calendar invite")
+
+
+
+                if send_success:
+                    print("✅ Calendar invite sent to both mentor and user")
+                else:
+                    print("❌ Failed to send calendar invite")
+
+
+                profile.session_count += 1
+                profile.save()
+
+                return Response({
+                    "success": True,
+                    "message": f"✅ Your {display_name.lower()} session is confirmed for {result['start_time'].strftime('%A, %B %d at %I:%M %p')} IST!",
+                    "booking_id": booking.id,
+                    "meet_link": result["meet_link"],
+                    "calendar_link": result.get("calendar_link"),
+                    "start_time": result["start_time"].isoformat(),
+                    "end_time": result["end_time"].isoformat(),
+                    "session_type": display_name,
+                    "session_count": profile.session_count
+                }, status=200)
+            else:
+                return Response({"error": result.get("error", "Booking failed")}, status=500)
+
+        except Exception as e:
+            traceback.print_exc()
+            return Response({"error": f"Error processing booking: {str(e)}"}, status=500)
 
 class AvailableSlotsView(APIView):
     authentication_classes = [TokenAuthentication]
@@ -671,11 +675,10 @@ class AvailableSlotsView(APIView):
     def get(self, request):
         """Return next 5 available 2-hour slots"""
         try:
-            from .calendar_client import find_next_available_2hour_slot, get_busy_slots
-            import datetime
+            from .calendar_client import find_next_available_2hour_slot
             
             available_slots = []
-            current_time = datetime.datetime.now()
+            current_time = datetime.now()
             
             # Get next 5 available slots
             for i in range(5):
@@ -688,7 +691,7 @@ class AvailableSlotsView(APIView):
                         "duration_hours": 2
                     })
                     # Move to next day to find next slot
-                    current_time += datetime.timedelta(days=1)
+                    current_time += timedelta(days=1)
                 except:
                     break
             
@@ -725,7 +728,7 @@ class ChatView(APIView):
                         "mentors": None
                     }, status=200)
                 
-                # NEW FEATURE: Detect domain from message
+                # Detect domain from message
                 detected_domain = detect_domain_from_message(message)
                 
                 if is_first_time_user(request.user):
@@ -745,12 +748,11 @@ class ChatView(APIView):
                     }, status=200)
                 
                 else:
-                    # NEW: If domain detected, auto-select mentor
+                    # If domain detected, auto-select mentor
                     if detected_domain != 'general':
                         selected_mentor = get_random_mentor_by_domain(detected_domain)
                         
                         if selected_mentor:
-                            # Return auto-selected mentor with domain info
                             return Response({
                                 "reply": f"🎯 I detected you're interested in {detected_domain.title()} domain. I've selected {selected_mentor.user.username} as your mentor specialist for this area.",
                                 "mentors": [{

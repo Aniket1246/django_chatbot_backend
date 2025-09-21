@@ -11,6 +11,7 @@ import datetime as dt  # Add this for type a # Add this import for type annotati
 from django.core.mail import EmailMessage
 from typing import List
 import ssl
+from urllib.parse import quote
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SERVICE_ACCOUNT_FILE = BASE_DIR / "credentials.json"
@@ -32,12 +33,74 @@ AVAILABLE_TIME_SLOTS = [
 # Minimum gap between sessions (7 days)
 MIN_SESSION_GAP_DAYS = 7
 
+def send_calendar_invite(attendees: list, subject: str, start_time: datetime, end_time: datetime, description: str, meet_link: str):
+    """
+    Send an email with Google Calendar event link to all attendees.
+    """
+    try:
+        # Format times in ISO for Google Calendar
+        start_utc = start_time.strftime('%Y%m%dT%H%M%SZ')
+        end_utc = end_time.strftime('%Y%m%dT%H%M%SZ')
 
+        # Google Calendar link
+        calendar_url = (
+            f"https://www.google.com/calendar/render?action=TEMPLATE"
+            f"&text={quote(subject)}"
+            f"&dates={start_utc}/{end_utc}"
+            f"&details={quote(description)}"
+            f"&location={quote(meet_link)}"
+            f"&trp=true"
+        )
+
+        # Email body
+        body = f"""
+Hi,
+
+You have a mentorship session scheduled.
+
+🗓 Date & Time: {start_time.strftime('%A, %B %d at %I:%M %p')} - {end_time.strftime('%I:%M %p')} IST
+👥 Attendees: {', '.join(attendees)}
+🔗 Meet Link: {meet_link}
+
+Add to your calendar: {calendar_url}
+
+Thanks,
+Mentorship Team
+        """
+
+        email = EmailMessage(
+            subject=subject,
+            body=body,
+            from_email=None,  # will use settings.EMAIL_HOST_USER
+            to=attendees
+        )
+        email.send(fail_silently=False)
+        return True
+    except Exception as e:
+        print("Error sending calendar invite:", e)
+        return False
+    
 def _ensure_tz(dt_obj: datetime) -> datetime:
     if dt_obj.tzinfo is None or dt_obj.tzinfo.utcoffset(dt_obj) is None:
         return dt_obj.replace(tzinfo=IST)
     return dt_obj
 
+def generate_google_calendar_url(summary, start_time, end_time, description, location=None):
+    """
+    Returns a Google Calendar URL for 'Add to Calendar'.
+    """
+    start_str = start_time.strftime("%Y%m%dT%H%M%S")
+    end_str = end_time.strftime("%Y%m%dT%H%M%S")
+
+    url = (
+        "https://www.google.com/calendar/render?action=TEMPLATE"
+        f"&text={quote(summary)}"
+        f"&dates={start_str}/{end_str}"
+        f"&details={quote(description)}"
+        f"&location={quote(location or '')}"
+        "&sf=true&output=xml"
+    )
+    return url
 
 def get_calendar_service():
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
@@ -309,36 +372,68 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[d
 
 
 
-def send_enhanced_manual_invitations(attendees, meet_link, calendar_link, start_time, end_time,
-                                     student_name, mentor_name, session_type, organizer_email=None):
+def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
+                                     student_name, mentor_name, session_type):
+    """
+    Send email invitations with 'Add to Google Calendar' button instead of broken calendar link.
+    """
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    import smtplib
+    import ssl
+    from urllib.parse import quote
+
+    # Generate Google Calendar URL
+    def generate_google_calendar_url(summary, start_time, end_time, description, location=None):
+        start_str = start_time.strftime("%Y%m%dT%H%M%S")
+        end_str = end_time.strftime("%Y%m%dT%H%M%S")
+        url = (
+            "https://www.google.com/calendar/render?action=TEMPLATE"
+            f"&text={quote(summary)}"
+            f"&dates={start_str}/{end_str}"
+            f"&details={quote(description)}"
+            f"&location={quote(location or '')}"
+            "&sf=true&output=xml"
+        )
+        return url
+
+    subject = f"📅 Mentorship Session Confirmation: {session_type}"
+
+    # Prepare calendar URL
+    calendar_url = generate_google_calendar_url(
+        summary=f"Mentorship Session: {student_name} & {mentor_name}",
+        start_time=start_time,
+        end_time=end_time,
+        description=f"Mentorship session with {mentor_name} & {student_name}. Join via Google Meet: {meet_link}",
+        location=meet_link
+    )
+
+    # Email HTML body
+    body = f"""
+    Hello,<br><br>
+    Your mentorship session has been scheduled!<br><br>
+
+    🧑‍🎓 Student: {student_name}<br>
+    🎓 Mentor: {mentor_name}<br>
+    🗓 Date: {start_time.strftime('%A, %d %B %Y')}<br>
+    ⏰ Time: {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} IST<br>
+    📍 Meet Link: <a href="{meet_link}">{meet_link}</a><br><br>
+
+    <a href="{calendar_url}" 
+       style="display:inline-block;padding:10px 20px;background-color:#1a73e8;color:white;text-decoration:none;border-radius:5px;">
+    Add to Google Calendar
+    </a><br><br>
+
+    Thank you for booking!
+    """
+
+    # Send email
     try:
-        subject = f"📅 Mentorship Session Confirmation: {session_type}"
-        body = f"""
-Hello,
-
-Your mentorship session has been successfully scheduled!
-
-🧑‍🎓 Student: {student_name}
-🎓 Mentor: {mentor_name}
-🗓 Date: {start_time.strftime('%A, %d %B %Y')}
-⏰ Time: {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} IST
-📍 Meet Link: {meet_link}
-📅 Calendar Link: {calendar_link}
-
-Thank you for booking with us! We look forward to your session.
-"""
-
         server = smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT)
         server.ehlo()
-
-        # ✅ FIX: use SSL context (no keyfile/certfile args)
         context = ssl.create_default_context()
         server.starttls(context=context)
-
         server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
-
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
 
         sent_count = 0
         for recipient in attendees:
@@ -346,17 +441,17 @@ Thank you for booking with us! We look forward to your session.
             msg['From'] = settings.EMAIL_HOST_USER
             msg['To'] = recipient
             msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'plain'))
+            msg.attach(MIMEText(body, 'html'))  # Use HTML format
 
             server.sendmail(settings.EMAIL_HOST_USER, recipient, msg.as_string())
             sent_count += 1
 
         server.quit()
-        print(f"📧 [EMAIL] Final result: {sent_count}/{len(attendees)} emails sent")
+        print(f"📧 Emails sent: {sent_count}/{len(attendees)}")
         return sent_count == len(attendees)
 
     except Exception as e:
-        print(f"❌ [EMAIL] Sending failed: {e}")
+        print(f"❌ Error sending email: {e}")
         return False
 
 
@@ -489,10 +584,8 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
         send_enhanced_manual_invitations(
             attendees=attendees,
             meet_link=event_result["meet_link"],
-            calendar_link=event_result["calendar_link"],
             start_time=slot_start,
             end_time=slot_end,
-            organizer_email=CALENDAR_ID,
             student_name=student_name,
             mentor_name=mentor_name,
             session_type="1-on-1 Mentorship"
@@ -557,10 +650,8 @@ def schedule_specific_slot(student_email: str, mentor_email: str,
             send_enhanced_manual_invitations(
                 attendees=[student_email, mentor_email],
                 meet_link=event_result["meet_link"],
-                calendar_link=event_result["calendar_link"],
                 start_time=slot_start,
                 end_time=slot_end,
-                organizer_email="sunilramtri000@gmail.com",
                 student_name=student_name,
                 mentor_name=mentor_name,
                 session_type="1-on-1 Mentorship"
@@ -592,3 +683,106 @@ def schedule_specific_slot(student_email: str, mentor_email: str,
 
 
 # Backward compatibility functions
+# Add these functions to your existing calendar_client.py (after your existing functions)
+
+def get_available_days_for_user(user_email: str, max_days: int = 7) -> List[dict]:
+    """
+    Get list of days that have available slots for a user
+    """
+    earliest_allowed = calculate_earliest_next_session(user_email)
+    available_days = []
+    
+    current_date = earliest_allowed.date()
+    days_checked = 0
+    
+    while len(available_days) < max_days and days_checked < 14:  # Check up to 14 days
+        check_date = current_date + timedelta(days=days_checked)
+        
+        # Skip weekends (optional)
+        if check_date.weekday() >= 5:
+            days_checked += 1
+            continue
+        
+        # Check if this day has any available slots
+        day_slots = get_slots_for_specific_day_helper(user_email, check_date)
+        if day_slots:
+            available_days.append({
+                "day": check_date.strftime('%A'),
+                "date": check_date.isoformat(),
+                "formatted": check_date.strftime('%A, %B %d'),
+                "slots_count": len(day_slots)
+            })
+        
+        days_checked += 1
+    
+    return available_days
+
+def get_slots_for_specific_day_helper(user_email: str, target_date) -> List[dict]:
+    """
+    Get available slots for a specific date (helper function)
+    """
+    if isinstance(target_date, str):
+        # If it's a day name like "monday", convert to actual date
+        days_map = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
+        if target_date.lower() in days_map:
+            today = datetime.now(IST)
+            target_weekday = days_map[target_date.lower()]
+            current_weekday = today.weekday()
+            
+            days_ahead = target_weekday - current_weekday
+            if days_ahead <= 0:
+                days_ahead += 7
+            
+            target_date = (today + timedelta(days=days_ahead)).date()
+    
+    # Ensure we have a date object
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    
+    print(f"🔍 Checking slots for {target_date}")
+    
+    # Get busy slots for this entire day
+    day_start = datetime.combine(target_date, dt.time(9, 0), tzinfo=IST)
+    day_end = datetime.combine(target_date, dt.time(17, 0), tzinfo=IST)
+    busy_slots = get_busy_slots(day_start, day_end)
+    
+    available_slots = []
+    earliest_allowed = calculate_earliest_next_session(user_email)
+    
+    # Check each time slot for this day
+    for start_hour, start_min, end_hour, end_min in AVAILABLE_TIME_SLOTS:
+        slot_start = datetime(
+            year=target_date.year,
+            month=target_date.month,
+            day=target_date.day,
+            hour=start_hour,
+            minute=start_min,
+            tzinfo=IST
+        )
+        slot_end = datetime(
+            year=target_date.year,
+            month=target_date.month,
+            day=target_date.day,
+            hour=end_hour,
+            minute=end_min,
+            tzinfo=IST
+        )
+        
+        # Skip if before earliest allowed time
+        if slot_start < earliest_allowed:
+            continue
+        
+        # Check if slot is available
+        if not has_overlap(slot_start, slot_end, busy_slots):
+            available_slots.append({
+                "start_time": slot_start,
+                "end_time": slot_end,
+                "formatted_date": slot_start.strftime('%A, %B %d'),
+                "formatted_time": f"{slot_start.strftime('%I:%M %p')} - {slot_end.strftime('%I:%M %p')} IST"
+            })
+    
+    return available_slots

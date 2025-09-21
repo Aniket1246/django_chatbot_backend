@@ -22,17 +22,17 @@ MEDIA_ROOT = BASE_DIR / "media"
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-g)our@8p30du#16exo7=h8wofssy!6qjh4w^q1s#zhcmwxu&q$')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True  # Set to False in production
+DEBUG = False
+ALLOWED_HOSTS = ["13.60.12.71", "ukjobsinsider.com", "www.ukjobsinsider.com","127.0.0.1", "localhost","33536843e95d.ngrok-free.app"]
 
-ALLOWED_HOSTS = ['*']
 
 # Email Configuration (use environment variables in production)
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.gmail.com"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "sunilramtri000@gmail.com")
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', "dqlg sjgv hdsg srde")
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "vardaan@ukjobsinsider.com")
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', "qrok nawh nkrr fakn")
 
 # Application definition
 INSTALLED_APPS = [
@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',  # For token authentication
     'corsheaders',
     'chatbot',
+    
 ]
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -80,9 +81,9 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",   # Vite React dev server
     "http://127.0.0.1:5173",
-    " https://33536843e95d.ngrok-free.app",
+    # " https://33536843e95d.ngrok-free.app",
     "http://localhost:5174", 
-"https://480e6ab68a18.ngrok-free.app ",  # Vite React dev server
+# "https://480e6ab68a18.ngrok-free.app ",  # Vite React dev server
 
 ]
 
@@ -149,7 +150,16 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
-
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'djongo',
+#         'NAME': 'ukjobsinsider',
+#         'CLIENT': {
+#             'host': 'mongodb+srv://d2023amitramtri_db_user:0aGLD4KQoCwBmrwI@ukjobsinsider.mzj7olb.mongodb.net/ukjobsinsider?retryWrites=true&w=majority',
+#             'connect': False,
+#         }
+#     }
+# }
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
