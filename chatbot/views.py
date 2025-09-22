@@ -475,6 +475,7 @@ class ScheduleView(APIView):
             preferred_day = data.get("preferred_day")
 
             profile, _ = UserProfile.objects.get_or_create(user=request.user)
+            print(f"👀 {request.user.email} session_count: {profile.session_count}")
 
             if not profile.is_premium:
                 return Response({"error": "Only premium users can book sessions."}, status=403)
@@ -619,6 +620,10 @@ class ScheduleView(APIView):
             if not slot_start or not slot_end:
                 return Response({"error": "Invalid datetime format in selected_slot"}, status=400)
 
+            # 🔑 Ensure head mentor email is always correct
+            if mentor_email == "head":
+                mentor_email = "sunilramtri000@gmail.com"
+
             result = schedule_specific_slot(
                 student_email=user.email,
                 mentor_email=mentor_email,
@@ -631,46 +636,31 @@ class ScheduleView(APIView):
             if result["success"]:
                 booking = SessionBooking.objects.create(
                     user=user,
-                    mentor=mentor,
+                    mentor=mentor,  # Head mentor ka actual Mentor object ho bhi sakta hai, warna None chalega
                     organizer="UK Jobs Mentorship System",
                     start_time=result["start_time"],
                     end_time=result["end_time"],
                     meet_link=result["meet_link"],
-                    attendees=[user.email, mentor_email],
+                    attendees=[user.email, mentor_email],  # 👈 Ensure head mentor email included
                     event_id=result["event_id"],
                     status="confirmed"
                 )
 
-# Send email with calendar invite to both mentor & user
- # Send email with calendar invite to both mentor & user
-                description = f"1-on-1 mentorship session with {display_name}"
-
-                student_email = user.email
-                student_name = user.username
-                mentor_name = display_name  # or mentor.user.username if available
-
+                # 📧 Always send invite to head mentor email
                 send_success = send_enhanced_manual_invitations(
-                    attendees=[student_email, mentor_email],
+                    attendees=[user.email, mentor_email],
                     meet_link=result["meet_link"],
                     start_time=result["start_time"],
                     end_time=result["end_time"],
-                    student_name=student_name,
-                    mentor_name=mentor_name,
+                    student_name=user.username,
+                    mentor_name=display_name,
                     session_type="1-on-1 Mentorship"
                 )
 
                 if send_success:
-                    print("✅ Calendar invite sent to both mentor and user")
+                    print(f"✅ Calendar invite sent to {user.email} and {mentor_email}")
                 else:
                     print("❌ Failed to send calendar invite")
-
-
-
-                if send_success:
-                    print("✅ Calendar invite sent to both mentor and user")
-                else:
-                    print("❌ Failed to send calendar invite")
-
 
                 profile.session_count += 1
                 profile.save()
@@ -692,6 +682,7 @@ class ScheduleView(APIView):
         except Exception as e:
             traceback.print_exc()
             return Response({"error": f"Error processing booking: {str(e)}"}, status=500)
+
 
 class AvailableSlotsView(APIView):
     authentication_classes = [TokenAuthentication]
@@ -760,7 +751,7 @@ class ChatView(APIView):
                     # First time user - show head mentor only
                     head_mentor = {
                         "id": "head",
-                        "username": "Sunil (Head Mentor)",
+                        "username": "Vardaan (Head Mentor)",
                         "email": "sunilramtri000@gmail.com",
                         "expertise": "Initial Assessment & Career Guidance"
                     }
