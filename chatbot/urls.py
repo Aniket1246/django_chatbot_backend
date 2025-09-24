@@ -1,6 +1,6 @@
 # chatbot/urls.py
 from django.urls import path
-from .views import SignupView, LoginView, LogoutView, ScheduleView, ChatView, UserProfileView, test_email_send, TestView,AvailableSlotsView, list_mentors
+from .views import SignupView, LoginView, LogoutView, ScheduleView, ChatView, CancelRescheduleView,UserProfileView, test_email_send, TestView,AvailableSlotsView, list_mentors
 
 urlpatterns = [
     # Authentication endpoints
@@ -15,7 +15,8 @@ urlpatterns = [
     path("mentors/", list_mentors, name="list_mentors"),
     path('available-slots/', AvailableSlotsView.as_view(), name='available-slots'),
     path('test-email/', test_email_send, name='test-email'),
-    
+    path("cancel-reschedule/", CancelRescheduleView.as_view(), name="cancel-reschedule"),
+
 
 
 ]

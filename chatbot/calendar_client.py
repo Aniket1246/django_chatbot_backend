@@ -9,7 +9,7 @@ from email.mime.text import MIMEText
 from datetime import datetime, timedelta, timezone
 import datetime as dt  # Add this for type a # Add this import for type annotations
 from django.core.mail import EmailMessage
-from typing import List
+from typing import List,Tuple
 import ssl
 from urllib.parse import quote
 
@@ -32,6 +32,17 @@ AVAILABLE_TIME_SLOTS = [
 
 # Minimum gap between sessions (7 days)
 MIN_SESSION_GAP_DAYS = 7
+
+def round_to_nearest_hour(dt_obj: datetime, round_up: bool = False) -> datetime:
+    """
+    Rounds a datetime object to the nearest hour.
+    round_up=True => always rounds up to next hour if minutes > 0
+    round_up=False => always rounds down to current hour
+    """
+    dt_obj = dt_obj.replace(second=0, microsecond=0)
+    if round_up and dt_obj.minute > 0:
+        return dt_obj.replace(minute=0) + timedelta(hours=1)
+    return dt_obj.replace(minute=0)
 
 def send_calendar_invite(attendees: list, subject: str, start_time: datetime, end_time: datetime, description: str, meet_link: str):
     """
@@ -81,6 +92,7 @@ Mentorship Team
         return False
     
 def _ensure_tz(dt_obj: datetime) -> datetime:
+    """Ensure datetime is timezone-aware (IST)"""
     if dt_obj.tzinfo is None or dt_obj.tzinfo.utcoffset(dt_obj) is None:
         return dt_obj.replace(tzinfo=IST)
     return dt_obj
@@ -187,41 +199,37 @@ def calculate_earliest_next_session(user_email: str) -> datetime:
 
 
 def get_busy_slots(start_ist: datetime, end_ist: datetime) -> List[Tuple[datetime, datetime]]:
-    """Get busy time slots from calendar"""
-    try:
-        service = get_calendar_service()
-        start_ist = _ensure_tz(start_ist).astimezone(IST)
-        end_ist = _ensure_tz(end_ist).astimezone(IST)
-        
-        events = service.events().list(
-            calendarId=CALENDAR_ID,
-            timeMin=start_ist.isoformat(),
-            timeMax=end_ist.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute().get("items", [])
-        
-        busy = []
-        for e in events:
-            s = e.get("start", {}).get("dateTime")
-            e_ = e.get("end", {}).get("dateTime")
-            if not s or not e_:
-                continue
-            sdt = dt.datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(IST)
-            edt = dt.datetime.fromisoformat(e_.replace("Z", "+00:00")).astimezone(IST)
-            busy.append((sdt, edt))
-            
-        print(f"📅 Found {len(busy)} busy slots")
-        return busy
-    except Exception as e:
-        print(f"❌ Error getting busy slots: {e}")
-        return []
+    """Get busy time slots from Google Calendar (all tz-aware)"""
+    service = get_calendar_service()  # your existing function
+    start_ist = _ensure_tz(start_ist)
+    end_ist = _ensure_tz(end_ist)
 
+    events = service.events().list(
+        calendarId=CALENDAR_ID,
+        timeMin=start_ist.isoformat(),
+        timeMax=end_ist.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute().get("items", [])
 
-def has_overlap(start_a: datetime, end_a: datetime, 
-                ranges: List[Tuple[datetime, datetime]]) -> bool:
-    """Check if time slot overlaps with busy periods"""
+    busy = []
+    for e in events:
+        s = e.get("start", {}).get("dateTime")
+        e_ = e.get("end", {}).get("dateTime")
+        if not s or not e_:
+            continue
+        sdt = dt.datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(IST)
+        edt = dt.datetime.fromisoformat(e_.replace("Z", "+00:00")).astimezone(IST)
+        busy.append((sdt, edt))
+    return busy
+
+def has_overlap(start_a: datetime, end_a: datetime, ranges: List[Tuple[datetime, datetime]]) -> bool:
+    """Check if a time slot overlaps with busy periods"""
+    start_a = _ensure_tz(start_a)
+    end_a = _ensure_tz(end_a)
     for s, e in ranges:
+        s = _ensure_tz(s)
+        e = _ensure_tz(e)
         if not (end_a <= s or start_a >= e):
             return True
     return False
@@ -284,7 +292,20 @@ def find_next_available_2hour_slot(after: datetime = None) -> Tuple[datetime, da
     print(f"⚠️ No slots available this week. Fallback: {fallback_start}")
     return fallback_start, fallback_end
 
+def get_google_calendar_service():
+    """Alias for get_calendar_service() for backward compatibility"""
+    return get_calendar_service()
 
+def cancel_calendar_event(event_id):
+    """Cancel a Google Calendar event by its ID"""
+    try:
+        service = get_calendar_service()
+        service.events().delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
+        return True
+    except Exception as e:
+        print(f"Error cancelling event {event_id}: {e}")
+        return False
+    
 def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[dict]:
     """
     Get multiple available slot options for a user across different days,
@@ -370,7 +391,32 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[d
     return slots
 
 
-
+def cancel_google_calendar_event(event_id):
+    """
+    Cancels a Google Calendar event using its ID.
+    
+    Args:
+        event_id (str): The ID of the event to cancel
+        
+    Returns:
+        bool: True if cancellation was successful, False otherwise
+    """
+    try:
+        # Get the Google Calendar service
+        service = get_google_calendar_service()
+        
+        # Delete the event
+        service.events().delete(
+            calendarId='primary',
+            eventId=event_id
+        ).execute()
+        
+        print(f"✅ Successfully cancelled calendar event: {event_id}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error cancelling calendar event: {e}")
+        return False
 
 def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
                                      student_name, mentor_name, session_type):

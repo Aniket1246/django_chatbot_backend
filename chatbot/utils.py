@@ -116,3 +116,11 @@ def extract_duration(message: str) -> int:
         return int(match_hr.group(1)) * 60
 
     return 120  # default 2 hours
+
+def cancel_calendar_event(event_id: str) -> bool:
+    """
+    Dummy function to simulate calendar event cancellation.
+    Always returns True for testing.
+    """
+    print(f"[Dummy] Cancelling calendar event: {event_id}")
+    return True
