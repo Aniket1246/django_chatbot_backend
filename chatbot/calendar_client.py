@@ -12,6 +12,7 @@ from django.core.mail import EmailMessage
 from typing import List,Tuple
 import ssl
 from urllib.parse import quote
+from .utils import cancel_calendar_event  # agar aapne utility function banaya hai
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SERVICE_ACCOUNT_FILE = BASE_DIR / "credentials.json"

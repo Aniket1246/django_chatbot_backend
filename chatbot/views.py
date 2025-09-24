@@ -56,6 +56,17 @@ DOMAIN_KEYWORDS = {
     'finance': ['finance', 'accounting', 'investment', 'banking', 'financial analysis'],
     'hr': ['hr', 'human resources', 'recruitment', 'talent', 'people management']
 }
+def is_cancel_request(message: str) -> bool:
+    """Check if the message is a cancellation request"""
+    lower = message.lower()
+    cancel_keywords = [
+        'cancel', 'cancel my', 'cancel session', 'cancel call', 'cancel meeting',
+        'cancel appointment', 'cancel booking', 'dont want', 'don\'t want',
+        'remove session', 'delete session', 'cancel last session',
+        'cancel my session', 'cancel my last session'
+    ]
+    
+    return any(keyword in lower for keyword in cancel_keywords)
 
 def ensure_timezone_aware(dt_obj):
     """Ensure datetime object is timezone-aware in IST"""
@@ -583,10 +594,11 @@ class CancelRescheduleView(APIView):
                 send_cancellation_email(
                     student_email=request.user.email,
                     student_name=request.user.username,
+                    mentor_email=last_session.mentor.user.email if last_session.mentor else None,
                     mentor_name=last_session.mentor.user.username if last_session.mentor else "Mentor",
                     session_time=session_time_ist
                 )
-                email_status = f"✅ Cancellation email sent to {request.user.email}"
+                email_status = print(f"📧 Sending cancellation email to student: {request.user.email} and mentor: {last_session.mentor.user.email}")
             except Exception as email_err:
                 email_status = f"❌ Failed to send cancellation email: {str(email_err)}"
                 print(email_status)
@@ -1060,7 +1072,53 @@ class ChatView(APIView):
             profile = UserProfile.objects.filter(user=request.user).first()
             is_premium = profile.is_premium if profile else False
 
-            # Detect meeting intent
+            # PRIORITY 1: Check for cancellation requests FIRST
+            if is_cancel_request(message):
+                if not is_premium:
+                    return Response({
+                        "reply": "⚠️ Only premium users can manage sessions. Please upgrade to premium.",
+                        "mentors": None
+                    }, status=200)
+                
+                # Get last booked session
+                last_session = (
+                    SessionBooking.objects.filter(user=request.user)
+                    .order_by("-created_at")
+                    .first()
+                )
+
+                if not last_session:
+                    return Response({
+                        "reply": "❌ No previous sessions found to cancel.",
+                        "mentors": None
+                    }, status=200)
+
+                # Convert start_time to readable format
+                session_start = last_session.start_time
+                if isinstance(session_start, str):
+                    from django.utils.dateparse import parse_datetime
+                    session_start = parse_datetime(session_start)
+
+                # Ensure timezone aware
+                from django.utils import timezone
+                IST = timezone.get_fixed_timezone(5*60 + 30)
+                if session_start.tzinfo is None:
+                    session_start = timezone.make_aware(session_start, IST)
+
+                session_time_ist = session_start.astimezone(IST).strftime('%d %b %Y, %I:%M %p')
+                mentor_name = last_session.mentor.user.username if last_session.mentor else "Mentor"
+
+                return Response({
+                    "reply": f"📅 I found your session with {mentor_name} scheduled for {session_time_ist}.\n\nAre you sure you want to cancel this session?",
+                    "session_actions": True,  # This will trigger the cancel/reschedule UI
+                    "session_details": {
+                        "mentor_name": mentor_name,
+                        "session_time": session_time_ist,
+                        "session_id": last_session.id
+                    }
+                }, status=200)
+
+            # PRIORITY 2: Check for meeting/booking requests  
             if is_meeting_request(message):
                 if not is_premium:
                     return Response({
@@ -1126,7 +1184,7 @@ class ChatView(APIView):
                         "detected_domain": detected_domain
                     }, status=200)
 
-            # Default AI chat
+            # PRIORITY 3: Default AI chat for other messages
             reply = ask_gemini(message, is_premium)
             return Response({"reply": reply}, status=200)
 

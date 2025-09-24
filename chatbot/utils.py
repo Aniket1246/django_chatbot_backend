@@ -117,10 +117,21 @@ def extract_duration(message: str) -> int:
 
     return 120  # default 2 hours
 
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+
 def cancel_calendar_event(event_id: str) -> bool:
     """
-    Dummy function to simulate calendar event cancellation.
-    Always returns True for testing.
+    Cancel a Google Calendar event using the API.
     """
-    print(f"[Dummy] Cancelling calendar event: {event_id}")
-    return True
+    try:
+        creds = Credentials.from_authorized_user_file("token.json", ["https://www.googleapis.com/auth/calendar"])
+        service = build("calendar", "v3", credentials=creds)
+
+        service.events().delete(calendarId="primary", eventId=event_id).execute()
+
+        print(f"✅ Google Calendar event {event_id} cancelled successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to cancel Google Calendar event: {e}")
+        return False
