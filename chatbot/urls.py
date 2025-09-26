@@ -17,6 +17,6 @@ urlpatterns = [
     path('test-email/', test_email_send, name='test-email'),
     path("cancel-reschedule/", CancelRescheduleView.as_view(), name="cancel-reschedule"),
 
-
+    
 
 ]

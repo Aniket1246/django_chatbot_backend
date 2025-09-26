@@ -548,107 +548,137 @@ UK Jobs Team
 # IST timezone
 
 class CancelRescheduleView(APIView):
-    authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        try:
-            action = request.data.get("action")  # "cancel" or "reschedule"
+        user = request.user
 
-            # Get last booked session
-            last_session = (
-                SessionBooking.objects.filter(user=request.user)
-                .order_by("-created_at")
-                .first()
+        # 1. Check if user has ever booked a session
+        last_session_any = (
+            SessionBooking.objects.filter(user=user)
+            .select_related('mentor', 'mentor__user')
+            .order_by("-created_at")
+            .first()
+        )
+        if not last_session_any:
+            return Response(
+                {"message": "❌ No booked sessions found."},
+                status=status.HTTP_404_NOT_FOUND
             )
 
-            if not last_session:
-                return Response({"error": "No previous sessions found."}, status=404)
+        # 2. Get last active (non-cancelled) session
+        last_session = (
+            SessionBooking.objects.filter(user=user)
+            .exclude(status="cancelled")
+            .select_related('mentor', 'mentor__user')
+            .order_by("-created_at")
+            .first()
+        )
+        if not last_session:
+            return Response(
+                {"message": "❌ No active sessions found to cancel. All your sessions are already cancelled."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-            # --- Convert start_time to datetime in IST ---
-            session_start = last_session.start_time
-            if isinstance(session_start, str):
-                from django.utils.dateparse import parse_datetime
-                session_start = parse_datetime(session_start)
+        # Store session info before cancelling
+        session_info = {
+            'event_id': getattr(last_session, 'event_id', None),
+            'start_time': last_session.start_time,
+            'mentor_name': last_session.mentor.user.username if last_session.mentor else "Mentor",
+            'student_name': user.username
+        }
 
-            # Ensure timezone aware
-            from django.utils import timezone
-            IST = timezone.get_fixed_timezone(5*60 + 30)  # IST +5:30
-            if session_start.tzinfo is None:
-                session_start = timezone.make_aware(session_start, IST)
+        # 3. Cancel session in database first
+        last_session.status = "cancelled"
+        last_session.save()
+        print(f"✅ Session {last_session.id} marked as cancelled in database")
 
-            # Format for email/response
-            session_start = to_aware_datetime(last_session.start_time)
-            session_time_ist = session_start.astimezone(timezone.get_fixed_timezone(5*60+30)).strftime('%d %b %Y, %I:%M %p')
-
-            # Cancel the calendar event if exists
-            if last_session.event_id:
-                cancel_calendar_event(last_session.event_id)
-
-            # Update session status
-            last_session.status = "cancelled"
-            last_session.save()
-
-            # Send cancellation email
+        # 4. Remove from Google Calendar (with enhanced error handling)
+        calendar_cancelled = False
+        if session_info['event_id']:
             try:
-                send_cancellation_email(
-                    student_email=request.user.email,
-                    student_name=request.user.username,
-                    mentor_email=last_session.mentor.user.email if last_session.mentor else None,
-                    mentor_name=last_session.mentor.user.username if last_session.mentor else "Mentor",
-                    session_time=session_time_ist
+                # Import the improved cancel function
+                from .calendar_client import cancel_calendar_event
+                calendar_cancelled = cancel_calendar_event(session_info['event_id'])
+                
+                if calendar_cancelled:
+                    print(f"✅ Calendar event {session_info['event_id']} cancelled successfully")
+                else:
+                    print(f"⚠️ Calendar event {session_info['event_id']} cancellation had issues")
+                    
+            except ImportError as import_err:
+                print(f"⚠️ Could not import calendar function: {import_err}")
+                
+            except Exception as cal_err:
+                print(f"⚠️ Calendar cancellation error: {cal_err}")
+        else:
+            print("ℹ️ No event_id found for calendar cancellation")
+
+        # 5. Send cancellation emails
+        email_sent = False
+        try:
+            student_email = user.email
+            student_name = user.first_name or user.username or "Student"
+            mentor_profile = last_session.mentor
+            mentor_email = mentor_profile.user.email if mentor_profile else None
+            mentor_name = mentor_profile.user.first_name or mentor_profile.user.username if mentor_profile else "Mentor"
+
+            if student_email and mentor_email:
+                # Import and use the fixed email function
+                from .emails import send_cancellation_email
+                
+                email_sent = send_cancellation_email(
+                    session=last_session,
+                    student_email=student_email,
+                    student_name=student_name,
+                    mentor_email=mentor_email,
+                    mentor_name=mentor_name
                 )
-                email_status = print(f"📧 Sending cancellation email to student: {request.user.email} and mentor: {last_session.mentor.user.email}")
-            except Exception as email_err:
-                email_status = f"❌ Failed to send cancellation email: {str(email_err)}"
-                print(email_status)
-
-            # Respond
-            if action == "cancel":
-                return Response({
-                    "message": f"Your session on {session_time_ist} with {last_session.mentor.user.username if last_session.mentor else 'Mentor'} has been cancelled.",
-                    "email_status": email_status
-                }, status=200)
-
-            elif action == "reschedule":
-                from .utils import get_next_available_slots_for_user
-                available_slots = get_next_available_slots_for_user(
-                    last_session.mentor.user.email if last_session.mentor else None,
-                    count=1
-                )
-
-                if not available_slots:
-                    return Response({
-                        "message": "Your last session has been cancelled, but no new slots are available right now.",
-                        "reschedule_possible": False,
-                        "email_status": email_status
-                    }, status=200)
-
-                new_slot = available_slots[0]
-                new_start_ist = new_slot["start_time"].astimezone(IST).strftime('%d %b %Y, %I:%M %p')
-                new_end_ist = new_slot["end_time"].astimezone(IST).strftime('%I:%M %p')
-
-                return Response({
-                    "message": "Your previous session has been cancelled. Here's the earliest available slot for rescheduling:",
-                    "earliest_slot": {
-                        "start_time": new_slot["start_time"].isoformat(),
-                        "end_time": new_slot["end_time"].isoformat(),
-                        "formatted_date": new_start_ist,
-                        "formatted_time": f"{new_start_ist} - {new_end_ist}"
-                    },
-                    "mentor_name": last_session.mentor.user.username if last_session.mentor else "Mentor",
-                    "requires_confirmation": True,
-                    "reschedule_possible": True,
-                    "email_status": email_status
-                }, status=200)
-
+                
+                if email_sent:
+                    print(f"✅ Cancellation emails sent successfully")
+                else:
+                    print(f"⚠️ Email sending had issues (check logs)")
+                    
             else:
-                return Response({"error": "Invalid action. Use 'cancel' or 'reschedule'."}, status=400)
-
-        except Exception as e:
+                print(f"⚠️ Missing email addresses: student={student_email}, mentor={mentor_email}")
+                
+        except ImportError as import_err:
+            print(f"⚠️ Could not import email function: {import_err}")
+            
+        except Exception as email_err:
+            print(f"⚠️ Failed to send cancellation emails: {email_err}")
             import traceback
             traceback.print_exc()
-            return Response({"error": str(e)}, status=500)
+
+        # 6. Prepare response message based on what succeeded
+        success_parts = []
+        warning_parts = []
+        
+        success_parts.append("✅ Your session has been cancelled")
+        
+        if email_sent:
+            success_parts.append("confirmation emails have been sent")
+        else:
+            warning_parts.append("email notifications may have failed")
+            
+        if calendar_cancelled:
+            success_parts.append("calendar event has been removed")
+        elif session_info['event_id']:
+            warning_parts.append("calendar removal may have had issues")
+
+        # Build final message
+        if success_parts:
+            message = " and ".join(success_parts) + "."
+            if warning_parts:
+                message += f" Note: {', '.join(warning_parts)}."
+        else:
+            message = "✅ Your session has been cancelled in the system."
+
+        return Response(
+            {"message": message},
+            status=status.HTTP_200_OK
+        )
 
         
 class ScheduleView(APIView):
@@ -656,7 +686,7 @@ class ScheduleView(APIView):
     permission_classes = [IsAuthenticated]
 
     HEAD_EMAIL = "sunilramtri000@gmail.com"
-    HEAD_NAME = "Sunil (Head Mentor)"
+    HEAD_NAME = "Vardaan Shekhawat (Head Mentor)"
 
     def post(self, request):
         try:
@@ -676,8 +706,8 @@ class ScheduleView(APIView):
             if not profile.is_premium:
                 return Response({"error": "Only premium users can book sessions."}, status=403)
 
-            # PRIORITY 1: HEAD mentor case (always use head mentor for first-time or explicit head request)
-            if mentor_id == "head" or is_first_time_user(request.user):
+            # PRIORITY 1: HEAD mentor case (ONLY for first-time users OR explicit head request)
+            if mentor_id == "head" or (is_first_time_user(request.user) and mentor_id is None):
                 head_email = "sunilramtri000@gmail.com"
                 head_name = "Sunil (Head Mentor)"
                 print(f"🎯 [HEAD] Using head mentor: {head_email}")
@@ -725,7 +755,7 @@ class ScheduleView(APIView):
                     "selected_mentor_id": "head"
                 }, status=200)
 
-            # PRIORITY 2: Specific mentor by ID
+            # PRIORITY 2: Specific mentor by ID (This should take precedence over domain)
             if mentor_id and mentor_id != "head":
                 try:
                     selected_mentor = Mentor.objects.get(id=mentor_id, is_active=True)
@@ -733,57 +763,58 @@ class ScheduleView(APIView):
                     mentor_name = selected_mentor.user.username
                     print(f"🎯 Specific mentor selected: {mentor_name} <{mentor_email}>")
                     
-                except Mentor.DoesNotExist:
-                    print(f"⚠️ Mentor with ID {mentor_id} not found, falling back to HEAD")
-                    mentor_email = self.HEAD_EMAIL
-                    mentor_name = self.HEAD_NAME
-                    selected_mentor = None
+                    # Get available slots for the SPECIFIC mentor (not head mentor)
+                    if preferred_day:
+                        available_slots = self.get_slots_for_specific_day(mentor_email, preferred_day)
+                    else:
+                        available_slots = get_next_available_slots_for_user(mentor_email, count=1)
 
-                if preferred_day:
-                    available_slots = self.get_slots_for_specific_day(mentor_email, preferred_day)
-                else:
-                    available_slots = get_next_available_slots_for_user(mentor_email, count=1)
+                    if not available_slots:
+                        return Response({
+                            "error": f"No available slots found for {mentor_name}",
+                            "show_day_filter": True,
+                            "available_days": self.get_available_days(mentor_email),
+                            "mentor_name": mentor_name
+                        }, status=200)
 
-                if not available_slots:
+                    earliest_slot = available_slots[0]
+
+                    # If user provided selected_slot, book it with the SPECIFIC mentor
+                    if selected_slot:
+                        return self.confirm_booking(
+                            request.user,
+                            mentor_email,  # Use the specific mentor's email, not head
+                            mentor_name,   # Use the specific mentor's name
+                            selected_slot,
+                            profile,
+                            selected_mentor  # Pass the actual mentor object
+                        )
+
                     return Response({
-                        "error": "No available slots found for this mentor",
+                        "message": f"Your earliest available slot with {mentor_name} is:",
+                        "earliest_slot": {
+                            "start_time": earliest_slot["start_time"].isoformat(),
+                            "end_time": earliest_slot["end_time"].isoformat(),
+                            "formatted_date": earliest_slot["formatted_date"],
+                            "formatted_time": earliest_slot["formatted_time"]
+                        },
+                        "mentor_name": mentor_name,
+                        "requires_confirmation": True,
                         "show_day_filter": True,
                         "available_days": self.get_available_days(mentor_email),
-                        "mentor_name": mentor_name
+                        "selected_mentor_id": selected_mentor.id
                     }, status=200)
+                    
+                except Mentor.DoesNotExist:
+                    print(f"⚠️ Mentor with ID {mentor_id} not found")
+                    return Response({
+                        "error": f"Mentor with ID {mentor_id} not found"
+                    }, status=400)
 
-                earliest_slot = available_slots[0]
-
-                if selected_slot:
-                    return self.confirm_booking(
-                        request.user,
-                        mentor_email,
-                        mentor_name,
-                        selected_slot,
-                        profile,
-                        selected_mentor
-                    )
-
-                return Response({
-                    "message": f"Your earliest available slot with {mentor_name} is:",
-                    "earliest_slot": {
-                        "start_time": earliest_slot["start_time"].isoformat(),
-                        "end_time": earliest_slot["end_time"].isoformat(),
-                        "formatted_date": earliest_slot["formatted_date"],
-                        "formatted_time": earliest_slot["formatted_time"]
-                    },
-                    "mentor_name": mentor_name,
-                    "requires_confirmation": True,
-                    "show_day_filter": True,
-                    "available_days": self.get_available_days(mentor_email),
-                    "selected_mentor_id": selected_mentor.id if selected_mentor else "head"
-                }, status=200)
-
-            # PRIORITY 3: Domain-based mentor selection (only for non-first-time users)
-            if domain and not is_first_time_user(request.user):
+            # PRIORITY 3: Domain-based mentor selection (only for non-first-time users without specific mentor)
+            if domain and not is_first_time_user(request.user) and not mentor_id:
                 selected_mentor = get_random_mentor_by_domain(domain)
 
-                # fallback to head mentor if no domain mentor found
                 if not selected_mentor or not getattr(selected_mentor.user, "email", None):
                     print(f"⚠️ No valid mentor for {domain}, falling back to HEAD")
                     mentor_email = self.HEAD_EMAIL
@@ -791,7 +822,7 @@ class ScheduleView(APIView):
                     selected_mentor = None
                 else:
                     mentor_email = selected_mentor.user.email.strip()
-                    mentor_name = f"{domain.title()} Expert"
+                    mentor_name = selected_mentor.user.username
 
                 print(f"🎯 Domain mentor selected: {mentor_name} <{mentor_email}>")
 
@@ -838,7 +869,7 @@ class ScheduleView(APIView):
 
             # ERROR: If no valid parameters provided
             return Response({
-                "error": "Invalid request. Please specify mentor_id='head' for head mentor or provide domain for domain-based booking."
+                "error": "Invalid request. Please specify mentor_id or provide domain for domain-based booking."
             }, status=400)
 
         except Exception as e:
@@ -846,6 +877,144 @@ class ScheduleView(APIView):
             traceback.print_exc()
             return Response({"error": f"Scheduling error: {str(e)}"}, status=500)
 
+    def confirm_booking(self, user, mentor_email, display_name, selected_slot, profile, mentor=None):
+        """Confirm and create the booking with enhanced error handling"""
+        try:
+            print(f"🔧 [BOOKING] Starting confirmation for {user.email}")
+            print(f"🔧 [BOOKING] Selected slot: {selected_slot}")
+            print(f"🔧 [BOOKING] Mentor email: {mentor_email}")
+            print(f"🔧 [BOOKING] Display name: {display_name}")
+            
+            # Validate slot data
+            if not isinstance(selected_slot, dict):
+                print(f"❌ [BOOKING] Invalid slot format: {type(selected_slot)}")
+                return Response({"error": "Invalid slot data format"}, status=400)
+            
+            slot_start_str = selected_slot.get("start_time")
+            slot_end_str = selected_slot.get("end_time")
+            
+            if not slot_start_str or not slot_end_str:
+                print(f"❌ [BOOKING] Missing times: start={slot_start_str}, end={slot_end_str}")
+                return Response({"error": "Missing start_time or end_time"}, status=400)
+
+            # Parse datetime strings
+            try:
+                slot_start = parse_datetime(slot_start_str) if isinstance(slot_start_str, str) else slot_start_str
+                slot_end = parse_datetime(slot_end_str) if isinstance(slot_end_str, str) else slot_end_str
+                
+                # Fallback to dateutil parser
+                if slot_start is None and dateutil_parser and isinstance(slot_start_str, str):
+                    slot_start = dateutil_parser.parse(slot_start_str)
+                if slot_end is None and dateutil_parser and isinstance(slot_end_str, str):
+                    slot_end = dateutil_parser.parse(slot_end_str)
+                
+                print(f"🔧 [BOOKING] Parsed times: start={slot_start}, end={slot_end}")
+                
+            except Exception as parse_error:
+                print(f"❌ [BOOKING] Datetime parsing failed: {parse_error}")
+                return Response({"error": f"Invalid datetime format: {str(parse_error)}"}, status=400)
+            
+            if not slot_start or not slot_end:
+                return Response({"error": "Could not parse datetime strings"}, status=400)
+
+            # Ensure timezone awareness
+            IST = timezone.get_fixed_timezone(5*60 + 30)
+            if slot_start.tzinfo is None:
+                slot_start = timezone.make_aware(slot_start, IST)
+            if slot_end.tzinfo is None:
+                slot_end = timezone.make_aware(slot_end, IST)
+
+            # IMPORTANT: Don't override mentor_email here - use the one passed in
+            print(f"🔧 [BOOKING] Final mentor email (not changed): {mentor_email}")
+            print(f"🔧 [BOOKING] Calling schedule_specific_slot...")
+            print(f"  - Student: {user.email}")
+            print(f"  - Mentor: {mentor_email}")
+            print(f"  - Times: {slot_start} to {slot_end}")
+
+            # Schedule the session with the correct mentor
+            try:
+                result = schedule_specific_slot(
+                    student_email=user.email,
+                    mentor_email=mentor_email,  # This should be the selected mentor's email
+                    slot_start=slot_start,
+                    slot_end=slot_end,
+                    student_name=user.username,
+                    mentor_name=display_name
+                )
+                print(f"🔧 [BOOKING] Schedule result: {result}")
+                
+            except Exception as schedule_error:
+                print(f"❌ [BOOKING] Scheduling failed: {schedule_error}")
+                traceback.print_exc()
+                return Response({"error": f"Scheduling failed: {str(schedule_error)}"}, status=500)
+
+            if not result.get("success"):
+                error_msg = result.get("error", "Unknown scheduling error")
+                print(f"❌ [BOOKING] Scheduling error: {error_msg}")
+                return Response({"error": error_msg}, status=500)
+
+            # Create booking record
+            try:
+                booking = SessionBooking.objects.create(
+                    user=user,
+                    mentor=mentor,  # This should be the actual mentor object
+                    organizer="UK Jobs Mentorship System",
+                    start_time=result["start_time"],
+                    end_time=result["end_time"],
+                    meet_link=result.get("meet_link", ""),
+                    attendees=[user.email, mentor_email],  # Correct mentor email
+                    event_id=result.get("event_id", ""),
+                    status="confirmed"
+                )
+                print(f"✅ [BOOKING] Created booking: {booking.id}")
+
+            except Exception as db_error:
+                print(f"❌ [BOOKING] Database error: {db_error}")
+                traceback.print_exc()
+                return Response({"error": f"Failed to save booking: {str(db_error)}"}, status=500)
+
+            # Send email to correct participants
+            try:
+                send_enhanced_manual_invitations(
+                    attendees=[user.email, mentor_email],  # Correct mentor email
+                    meet_link=result["meet_link"],
+                    start_time=result["start_time"],
+                    end_time=result["end_time"],
+                    student_name=user.username,
+                    mentor_name=display_name,
+                    session_type="1-on-1 Mentorship"
+                )
+                print(f"✅ [BOOKING] Email sent to {mentor_email}")
+            except Exception as email_error:
+                print(f"⚠️ [BOOKING] Email failed (non-critical): {email_error}")
+
+            # Update session count
+            profile.session_count += 1
+            profile.save()
+
+            # Format response
+            start_formatted = result["start_time"].strftime('%A, %B %d at %I:%M %p')
+            
+            return Response({
+                "success": True,
+                "message": f"Your session with {display_name} is confirmed for {start_formatted} IST!",
+                "booking_id": booking.id,
+                "meet_link": result["meet_link"],
+                "calendar_link": result.get("calendar_link", ""),
+                "start_time": result["start_time"].isoformat(),
+                "end_time": result["end_time"].isoformat(),
+                "session_type": display_name,
+                "session_count": profile.session_count,
+                "mentor_name": display_name,
+                "mentor_email": mentor_email  # For debugging
+            }, status=200)
+
+        except Exception as e:
+            print(f"❌ [BOOKING] Unexpected error: {e}")
+            traceback.print_exc()
+            return Response({"error": f"Booking failed: {str(e)}"}, status=500)
+
+    # Keep other methods unchanged
     def get_available_days(self, email):
         """Get list of days in next 7 days that have available slots"""
         try:
@@ -1080,16 +1249,17 @@ class ChatView(APIView):
                         "mentors": None
                     }, status=200)
                 
-                # Get last booked session
+                # Get last ACTIVE (non-cancelled) session
                 last_session = (
                     SessionBooking.objects.filter(user=request.user)
+                    .exclude(status="cancelled")  # Exclude already cancelled sessions
                     .order_by("-created_at")
                     .first()
                 )
 
                 if not last_session:
                     return Response({
-                        "reply": "❌ No previous sessions found to cancel.",
+                        "reply": "❌ No active booked sessions found to cancel.",
                         "mentors": None
                     }, status=200)
 
@@ -1109,7 +1279,7 @@ class ChatView(APIView):
                 mentor_name = last_session.mentor.user.username if last_session.mentor else "Mentor"
 
                 return Response({
-                    "reply": f"📅 I found your session with {mentor_name} scheduled for {session_time_ist}.\n\nAre you sure you want to cancel this session?",
+                    "reply": f"📅 I found your active session with {mentor_name} scheduled for {session_time_ist}.\n\nAre you sure you want to cancel this session?",
                     "session_actions": True,  # This will trigger the cancel/reschedule UI
                     "session_details": {
                         "mentor_name": mentor_name,

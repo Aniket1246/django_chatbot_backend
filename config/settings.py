@@ -17,13 +17,15 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / "media"
+# Add this if you're using Django 3.2+ or newer
+DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
 # SECURITY WARNING: keep the secret key used in production secret!
 # TODO: Move this to environment variable in production
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-g)our@8p30du#16exo7=h8wofssy!6qjh4w^q1s#zhcmwxu&q$')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
-ALLOWED_HOSTS = ["13.60.12.71", "ukjobsinsider.com", "www.ukjobsinsider.com","127.0.0.1", "localhost","33536843e95d.ngrok-free.app"]
+ALLOWED_HOSTS = ["13.60.12.71", "ukjobsinsider.com", "www.ukjobsinsider.com","127.0.0.1", "localhost","33536843e95d.ngrok-free.app", "3956adfbbbcc.ngrok-free.app", "a5e9904923bb.ngrok-free.app","51.21.122.77"]
 
 
 # Email Configuration (use environment variables in production)
@@ -63,6 +65,7 @@ CORS_ALLOW_HEADERS = [
 ]
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
+    
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -82,9 +85,9 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",   # Vite React dev server
     "http://127.0.0.1:5173",
-    # " https://33536843e95d.ngrok-free.app",
+    "https://a5e9904923bb.ngrok-free.app",
     "http://localhost:5174", 
-# "https://480e6ab68a18.ngrok-free.app ",  # Vite React dev server
+    "https://3956adfbbbcc.ngrok-free.app",  # Vite React dev server
 
 ]
 
@@ -199,13 +202,21 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 
 # Session Configuration
-SESSION_COOKIE_SECURE = False  # Set to True in production with HTTPS
+SESSION_COOKIE_SECURE = True  # Set to True in production with HTTPS
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_AGE = 86400  # 24 hours
-
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
 # CSRF Configuration
-CSRF_COOKIE_SECURE = False  # Set to True in production with HTTPS
-CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SECURE = True  # Set to True in production with HTTPS
+CSRF_COOKIE_HTTPONLY = False
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://3956adfbbbcc.ngrok-free.app",  # Frontend ngrok
+    "https://a5e9904923bb.ngrok-free.app",  # Backend ngrok
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
 
 # Token Configuration
 TOKEN_EXPIRY_TIME = 86400  # 24 hours in seconds

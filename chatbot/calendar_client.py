@@ -15,7 +15,7 @@ from urllib.parse import quote
 from .utils import cancel_calendar_event  # agar aapne utility function banaya hai
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SERVICE_ACCOUNT_FILE = BASE_DIR / "credentials.json"
+SERVICE_ACCOUNT_FILE = BASE_DIR / "credentials1.json"
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 CALENDAR_ID = "sunilramtri000@gmail.com"  # organizer email
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -185,7 +185,8 @@ def calculate_earliest_next_session(user_email: str) -> datetime:
     now = datetime.now(IST)
     
     if last_session_end is None:
-        # First-time user - can book anytime from today
+        print(f" {user_email}No Booking sessions found ")
+ # First-time user - can book anytime from today
         return now
     
     # Add 7-day gap to last session date
@@ -298,14 +299,36 @@ def get_google_calendar_service():
     return get_calendar_service()
 
 def cancel_calendar_event(event_id):
-    """Cancel a Google Calendar event by its ID"""
+    """Cancel a Google Calendar event by its ID with proper error handling"""
+    if not event_id or event_id.strip() == "":
+        print("⚠️ No event_id provided for calendar cancellation")
+        return False
+        
     try:
         service = get_calendar_service()
         service.events().delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
+        print(f"✅ Successfully cancelled calendar event: {event_id}")
         return True
+        
     except Exception as e:
-        print(f"Error cancelling event {event_id}: {e}")
-        return False
+        error_msg = str(e)
+        
+        # Handle specific error cases
+        if "410" in error_msg or "deleted" in error_msg.lower():
+            print(f"ℹ️ Calendar event {event_id} was already deleted")
+            return True  # Consider this a success since the goal is achieved
+            
+        elif "404" in error_msg or "not found" in error_msg.lower():
+            print(f"ℹ️ Calendar event {event_id} not found (may have been manually deleted)")
+            return True  # Consider this a success since the goal is achieved
+            
+        elif "403" in error_msg or "forbidden" in error_msg.lower():
+            print(f"❌ Access denied for calendar event {event_id}")
+            return False
+            
+        else:
+            print(f"❌ Unexpected error cancelling calendar event {event_id}: {e}")
+            return False
     
 def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[dict]:
     """
@@ -394,31 +417,51 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[d
 
 def cancel_google_calendar_event(event_id):
     """
-    Cancels a Google Calendar event using its ID.
+    Cancels a Google Calendar event using its ID with enhanced error handling.
     
     Args:
         event_id (str): The ID of the event to cancel
         
     Returns:
-        bool: True if cancellation was successful, False otherwise
+        bool: True if cancellation was successful or event was already deleted, False otherwise
     """
+    if not event_id or event_id.strip() == "":
+        print("⚠️ No event_id provided for calendar cancellation")
+        return False
+        
     try:
-        # Get the Google Calendar service
         service = get_google_calendar_service()
         
-        # Delete the event
-        service.events().delete(
-            calendarId='primary',
-            eventId=event_id
-        ).execute()
+        # Try to get the event first to check if it exists
+        try:
+            service.events().get(calendarId='primary', eventId=event_id).execute()
+        except Exception as get_error:
+            if "410" in str(get_error) or "deleted" in str(get_error).lower():
+                print(f"ℹ️ Calendar event {event_id} is already deleted")
+                return True
+            elif "404" in str(get_error) or "not found" in str(get_error).lower():
+                print(f"ℹ️ Calendar event {event_id} not found")
+                return True
+            # If other error, continue with delete attempt
         
+        # Delete the event
+        service.events().delete(calendarId='primary', eventId=event_id).execute()
         print(f"✅ Successfully cancelled calendar event: {event_id}")
         return True
         
     except Exception as e:
-        print(f"❌ Error cancelling calendar event: {e}")
-        return False
-
+        error_msg = str(e)
+        
+        if "410" in error_msg or "deleted" in error_msg.lower():
+            print(f"ℹ️ Calendar event {event_id} was already deleted")
+            return True
+        elif "404" in error_msg or "not found" in error_msg.lower():
+            print(f"ℹ️ Calendar event {event_id} not found")
+            return True
+        else:
+            print(f"❌ Error cancelling calendar event {event_id}: {e}")
+            return False
+        
 def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
                                      student_name, mentor_name, session_type):
     """
@@ -692,17 +735,8 @@ def schedule_specific_slot(student_email: str, mentor_email: str,
         )
         
         if event_result["success"]:
-            # Send enhanced invitations
-            print("📧 Sending email invitations to:", [student_email, mentor_email])
-            send_enhanced_manual_invitations(
-                attendees=[student_email, mentor_email],
-                meet_link=event_result["meet_link"],
-                start_time=slot_start,
-                end_time=slot_end,
-                student_name=student_name,
-                mentor_name=mentor_name,
-                session_type="1-on-1 Mentorship"
-            )
+            # REMOVED: Email sending from here to prevent duplicates
+            # Email will be sent from confirm_booking instead
             
             return {
                 "success": True,
