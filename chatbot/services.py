@@ -6,8 +6,7 @@ from .calendar_client import (
     schedule_mentorship_session, 
     find_next_available_2hour_slot,
     create_enhanced_event,
-    send_enhanced_manual_invitations,
-    IST
+    send_enhanced_manual_invitations
 )
 
 def schedule_between_two_users(organizer_user, duration_minutes=120, fixed_mentor=None):

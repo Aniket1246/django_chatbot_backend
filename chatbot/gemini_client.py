@@ -42,7 +42,7 @@ def ask_gemini(user_message: str, is_premium: bool = False):
         if not GEMINI_API_KEY:
             return "AI service is currently unavailable. Please contact support."
         
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
         # Free vs Premium rules
         if is_premium:

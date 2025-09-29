@@ -25,7 +25,7 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-g)our@8p30du#16exo7
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
-ALLOWED_HOSTS = ["13.60.12.71", "ukjobsinsider.com", "www.ukjobsinsider.com","127.0.0.1", "localhost","33536843e95d.ngrok-free.app", "3956adfbbbcc.ngrok-free.app", "a5e9904923bb.ngrok-free.app","51.21.122.77"]
+ALLOWED_HOSTS = ["13.60.12.71", "ukjobsinsider.com", "www.ukjobsinsider.com","127.0.0.1", "localhost","33536843e95d.ngrok-free.app", "3956adfbbbcc.ngrok-free.app", "a5e9904923bb.ngrok-free.app","51.21.122.77","7214fdd8b87a.ngrok-free.app"]
 
 
 # Email Configuration (use environment variables in production)

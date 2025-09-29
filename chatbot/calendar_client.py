@@ -7,21 +7,67 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta, timezone
-import datetime as dt  # Add this for type a # Add this import for type annotations
+import datetime as dt
 from django.core.mail import EmailMessage
-from typing import List,Tuple
 import ssl
 from urllib.parse import quote
-from .utils import cancel_calendar_event  # agar aapne utility function banaya hai
+import json
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SERVICE_ACCOUNT_FILE = BASE_DIR / "credentials1.json"
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
-CALENDAR_ID = "sunilramtri000@gmail.com"  # organizer email
-IST = timezone(timedelta(hours=5, minutes=30))
+from zoneinfo import ZoneInfo
+UK_TZ = ZoneInfo("Europe/London")
+# MENTOR CONFIGURATION - Add new mentors here
+MENTOR_CONFIG = {
+    "head": {
+        "name": "Vardaan (Head Mentor)",
+        "email": "vardaan@ukjobsinsider.com",
+        "credentials_file": "credentials_vardaan.json",
+        "meet_link": "https://meet.google.com/head-mentor-link",
+        "calendar_id": "vardaan@ukjobsinsider.com"
+    },
+    #  "vaidaansh": {
+    #     "name": "Vaidaansh Mentor", 
+    #     "email": "vaidaansh1shekhawat@gmail.com",
+    #     "credentials_file": "credentials_vaidaansh.json",
+    #     "meet_link": "https://meet.google.com/gbv-mkux-scx",
+    #     "calendar_id": "vaidaansh1shekhawat@gmail.com"
+    # },
+    "kapil": {
+        "name": "kapil Mentor", 
+        "email": "kapilsanjaykanjani@gmail.com",
+        "credentials_file": "credentials_kapil.json",
+        "meet_link": "https://meet.google.com/gbv-mkux-scx",
+        "calendar_id": "kapilsanjaykanjani@gmail.com"
+    },
+    "meena": {
+        "name": "Meena Mentor", 
+        "email": "meenavalavala@gmail.com",  # Updated with actual email
+        "credentials_file": "credentials1.json",
+        "meet_link": "https://meet.google.com/csx-bkoy-sct",
+        "calendar_id": "meenavalavala@gmail.com"  # Updated with actual email
+    },
+        "amit": {
+        "name": "amit Mentor", 
+        "email": "sunilramtri000@gmail.com",  # Updated with actual email
+        "credentials_file": "credentials.json",
+        "meet_link": "https://meet.google.com/csx-bkoy-sct",
+        "calendar_id": "sunilramtri000@gmail.com"  # Updated with actual email
+    },
+        "Simran": {
+        "name": "Simran Mentor", 
+        "email": "simranchetanshah98@gmail.com",  # Updated with actual email
+        "credentials_file": "credentials_simran.json",
+        "meet_link": "https://meet.google.com/vbu-xbhk-dji",
+        "calendar_id": "simranchetanshah98@gmail.com"  # Updated with actual email
+    }
+}
 
-# Fixed Meet link
-FIXED_MEET_LINK = "https://meet.google.com/zui-xrya-abg"
+# Fallback configuration (your original setup)
+DEFAULT_MENTOR_CONFIG = {
+    "credentials_file": "credentials1.json",
+    "meet_link": "https://meet.google.com/csx-bkoy-sct",
+    "calendar_id": "meenavalavala@gmail.com"
+}
 
 # 2-hour time slots (9 AM - 5 PM)
 AVAILABLE_TIME_SLOTS = [
@@ -34,6 +80,93 @@ AVAILABLE_TIME_SLOTS = [
 # Minimum gap between sessions (7 days)
 MIN_SESSION_GAP_DAYS = 7
 
+# Add this debug function in calendar_client.py
+# def debug_mentor_matching(mentor_email: str):
+#     """Debug mentor configuration matching"""
+#     print(f"🔍 [DEBUG] Looking for mentor: '{mentor_email}'")
+#     print(f"🔍 [DEBUG] Available mentors:")
+    
+#     for mentor_key, config in MENTOR_CONFIG.items():
+#         config_email = config["email"]
+#         print(f"  - {mentor_key}: '{config_email}' (match: {config_email.lower() == mentor_email.lower()})")
+
+
+# Test this in Django shell:
+
+def debug_service_account_info(credentials_file: str):
+    """Debug service account email and permissions"""
+    try:
+        credentials_path = BASE_DIR / credentials_file
+        credentials = service_account.Credentials.from_service_account_file(
+            str(credentials_path), 
+            scopes=["https://www.googleapis.com/auth/calendar"]
+        )
+        service = build("calendar", "v3", credentials=credentials)
+        
+        # Get service account email from credentials
+        with open(credentials_path, 'r') as f:
+            cred_data = json.load(f)
+            service_account_email = cred_data.get('client_email')
+        
+        print(f"Service Account Email: {service_account_email}")
+        
+        # Test calendar access
+        calendar_list = service.calendarList().list().execute()
+        print(f"Accessible calendars: {len(calendar_list.get('items', []))}")
+        
+        for cal in calendar_list.get('items', []):
+            print(f"  - {cal['summary']} ({cal['id']}) - Access: {cal.get('accessRole', 'unknown')}")
+            
+        return service_account_email
+        
+    except Exception as e:
+        print(f"Debug failed: {e}")
+        return None
+
+def get_mentor_config(mentor_email: str) -> dict:
+    """
+    Get mentor configuration based on email.
+    Returns mentor config or default if not found.
+    """
+    # Check if it's a known mentor
+    for mentor_key, config in MENTOR_CONFIG.items():
+        if config["email"].lower() == mentor_email.lower():
+            return config
+    
+    # Fallback to default configuration
+    return {
+        "name": "Mentor",
+        "email": mentor_email,
+        "credentials_file": DEFAULT_MENTOR_CONFIG["credentials_file"],
+        "meet_link": DEFAULT_MENTOR_CONFIG["meet_link"],
+        "calendar_id": DEFAULT_MENTOR_CONFIG["calendar_id"]
+    }
+
+def get_calendar_service(mentor_email: str = None):
+    """
+    Get Google Calendar service for specific mentor.
+    If mentor_email is provided, use their specific credentials.
+    """
+    mentor_config = get_mentor_config(mentor_email) if mentor_email else DEFAULT_MENTOR_CONFIG
+    
+    credentials_file = BASE_DIR / mentor_config["credentials_file"]
+    
+    if not os.path.exists(credentials_file):
+        print(f"❌ Credentials file not found: {credentials_file}")
+        # Fallback to default credentials
+        credentials_file = BASE_DIR / DEFAULT_MENTOR_CONFIG["credentials_file"]
+        if not os.path.exists(credentials_file):
+            raise FileNotFoundError(f"No valid credentials file found")
+    
+    print(f"🔑 Using credentials: {credentials_file}")
+    
+    SCOPES = ["https://www.googleapis.com/auth/calendar"]
+    credentials = service_account.Credentials.from_service_account_file(
+        str(credentials_file), scopes=SCOPES
+    )
+    service = build("calendar", "v3", credentials=credentials)
+    return service, mentor_config
+
 def round_to_nearest_hour(dt_obj: datetime, round_up: bool = False) -> datetime:
     """
     Rounds a datetime object to the nearest hour.
@@ -45,127 +178,69 @@ def round_to_nearest_hour(dt_obj: datetime, round_up: bool = False) -> datetime:
         return dt_obj.replace(minute=0) + timedelta(hours=1)
     return dt_obj.replace(minute=0)
 
-def send_calendar_invite(attendees: list, subject: str, start_time: datetime, end_time: datetime, description: str, meet_link: str):
-    """
-    Send an email with Google Calendar event link to all attendees.
-    """
-    try:
-        # Format times in ISO for Google Calendar
-        start_utc = start_time.strftime('%Y%m%dT%H%M%SZ')
-        end_utc = end_time.strftime('%Y%m%dT%H%M%SZ')
-
-        # Google Calendar link
-        calendar_url = (
-            f"https://www.google.com/calendar/render?action=TEMPLATE"
-            f"&text={quote(subject)}"
-            f"&dates={start_utc}/{end_utc}"
-            f"&details={quote(description)}"
-            f"&location={quote(meet_link)}"
-            f"&trp=true"
-        )
-
-        # Email body
-        body = f"""
-Hi,
-
-You have a mentorship session scheduled.
-
-🗓 Date & Time: {start_time.strftime('%A, %B %d at %I:%M %p')} - {end_time.strftime('%I:%M %p')} IST
-👥 Attendees: {', '.join(attendees)}
-🔗 Meet Link: {meet_link}
-
-Add to your calendar: {calendar_url}
-
-Thanks,
-Mentorship Team
-        """
-
-        email = EmailMessage(
-            subject=subject,
-            body=body,
-            from_email=None,  # will use settings.EMAIL_HOST_USER
-            to=attendees
-        )
-        email.send(fail_silently=False)
-        return True
-    except Exception as e:
-        print("Error sending calendar invite:", e)
-        return False
-    
 def _ensure_tz(dt_obj: datetime) -> datetime:
-    """Ensure datetime is timezone-aware (IST)"""
+    """Ensure datetime is timezone-aware (UK time)"""
     if dt_obj.tzinfo is None or dt_obj.tzinfo.utcoffset(dt_obj) is None:
-        return dt_obj.replace(tzinfo=IST)
+        return dt_obj.replace(tzinfo=UK_TZ)
     return dt_obj
 
-def generate_google_calendar_url(summary, start_time, end_time, description, location=None):
-    """
-    Returns a Google Calendar URL for 'Add to Calendar'.
-    """
-    start_str = start_time.strftime("%Y%m%dT%H%M%S")
-    end_str = end_time.strftime("%Y%m%dT%H%M%S")
-
-    url = (
-        "https://www.google.com/calendar/render?action=TEMPLATE"
-        f"&text={quote(summary)}"
-        f"&dates={start_str}/{end_str}"
-        f"&details={quote(description)}"
-        f"&location={quote(location or '')}"
-        "&sf=true&output=xml"
-    )
-    return url
-
-def get_calendar_service():
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        raise FileNotFoundError(f"Credentials file not found: {SERVICE_ACCOUNT_FILE}")
-    
-    credentials = service_account.Credentials.from_service_account_file(
-        str(SERVICE_ACCOUNT_FILE), scopes=SCOPES
-    )
-    service = build("calendar", "v3", credentials=credentials)
-    return service
-
-
-def get_user_last_session_date(user_email: str) -> Optional[datetime]:
+def get_user_last_session_date(user_email: str, mentor_email: str = None) -> Optional[datetime]:
     """
     Get the most recent confirmed session date for a user.
-    Returns the end time of their last session.
+    Now checks ALL mentor calendars or specific mentor if provided.
     """
     try:
-        service = get_calendar_service()
+        all_sessions = []
         
-        # Search for past events where this user was an attendee
-        now = datetime.now(IST)
-        # Look back 6 months to find recent sessions
-        start_search = now - timedelta(days=180)
+        # If specific mentor provided, check only their calendar
+        if mentor_email:
+            calendars_to_check = [mentor_email]
+            print(f"📅 Checking last session for {user_email} with mentor {mentor_email}")
+        else:
+            # Check all mentor calendars
+            calendars_to_check = [config["email"] for config in MENTOR_CONFIG.values()]
+            print(f"📅 Checking last session for {user_email} in all calendars: {calendars_to_check}")
         
-        events = service.events().list(
-            calendarId=CALENDAR_ID,
-            timeMin=start_search.isoformat(),
-            timeMax=now.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-            q=user_email  # Search for events containing user's email
-        ).execute().get("items", [])
-        
-        user_sessions = []
-        for event in events:
-            # Check if user is in attendees and event is confirmed
-            attendees = event.get('attendees', [])
-            if any(att.get('email') == user_email and att.get('responseStatus') == 'accepted' 
-                   for att in attendees):
+        for calendar_email in calendars_to_check:
+            try:
+                service, mentor_config = get_calendar_service(calendar_email)
+                calendar_id = mentor_config["calendar_id"]
                 
-                end_time_str = event.get("end", {}).get("dateTime")
-                if end_time_str:
-                    end_time = dt.datetime.fromisoformat(
-                        end_time_str.replace("Z", "+00:00")
-                    ).astimezone(IST)
-                    user_sessions.append(end_time)
+                # Search for past events where this user was an attendee
+                now = datetime.now(UK_TZ)
+                start_search = now - timedelta(days=180)
+                
+                events = service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=start_search.isoformat(),
+                    timeMax=now.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    q=user_email
+                ).execute().get("items", [])
+                print(f"[DEBUG] get_user_last_session_date(student={user_email}, mentor={mentor_email})")
+
+                
+                for event in events:
+                    attendees = event.get('attendees', [])
+                    if any(att.get('email') == user_email and att.get('responseStatus') == 'accepted' 
+                           for att in attendees):
+                        
+                        end_time_str = event.get("end", {}).get("dateTime")
+                        if end_time_str:
+                            end_time = dt.datetime.fromisoformat(
+                                end_time_str.replace("Z", "+00:00")
+                            ).astimezone(UK_TZ)
+                            all_sessions.append(end_time)
+                            print(f"📅 Found session in {calendar_email}: {end_time}")
+                            
+            except Exception as e:
+                print(f"⚠️ Error checking calendar {calendar_email}: {e}")
+                continue
         
-        if user_sessions:
-            # Return the most recent session end time
-            last_session = max(user_sessions)
-            print(f"📅 Found last session for {user_email}: {last_session}")
+        if all_sessions:
+            last_session = max(all_sessions)
+            print(f"📅 Latest session for {user_email}: {last_session}")
             return last_session
         else:
             print(f"📅 No previous sessions found for {user_email}")
@@ -175,39 +250,36 @@ def get_user_last_session_date(user_email: str) -> Optional[datetime]:
         print(f"❌ Error getting last session date: {e}")
         return None
 
-
-def calculate_earliest_next_session(user_email: str) -> datetime:
+def calculate_earliest_next_session(user_email: str, mentor_email: str = None) -> datetime:
     """
     Calculate the earliest date a user can book their next session
-    based on the 7-day gap rule.
+    based on the 7-day gap rule. Now considers specific mentor.
     """
-    last_session_end = get_user_last_session_date(user_email)
-    now = datetime.now(IST)
+    last_session_end = get_user_last_session_date(user_email, mentor_email)
+    now = datetime.now(UK_TZ)
     
     if last_session_end is None:
-        print(f" {user_email}No Booking sessions found ")
- # First-time user - can book anytime from today
+        print(f"📅 {user_email} - No previous sessions found")
         return now
     
-    # Add 7-day gap to last session date
     earliest_next = last_session_end + timedelta(days=MIN_SESSION_GAP_DAYS)
     
-    # If earliest_next is in the past, use current time
     if earliest_next < now:
         return now
     
     print(f"📅 7-day gap enforcement: earliest next session for {user_email} is {earliest_next}")
     return earliest_next
 
-
-def get_busy_slots(start_ist: datetime, end_ist: datetime) -> List[Tuple[datetime, datetime]]:
-    """Get busy time slots from Google Calendar (all tz-aware)"""
-    service = get_calendar_service()  # your existing function
+def get_busy_slots(start_ist: datetime, end_ist: datetime, mentor_email: str = None) -> List[Tuple[datetime, datetime]]:
+    """Get busy time slots from specific mentor's Google Calendar"""
+    service, mentor_config = get_calendar_service(mentor_email)
+    calendar_id = mentor_config["calendar_id"]
+    
     start_ist = _ensure_tz(start_ist)
     end_ist = _ensure_tz(end_ist)
 
     events = service.events().list(
-        calendarId=CALENDAR_ID,
+        calendarId=calendar_id,
         timeMin=start_ist.isoformat(),
         timeMax=end_ist.isoformat(),
         singleEvents=True,
@@ -220,8 +292,8 @@ def get_busy_slots(start_ist: datetime, end_ist: datetime) -> List[Tuple[datetim
         e_ = e.get("end", {}).get("dateTime")
         if not s or not e_:
             continue
-        sdt = dt.datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(IST)
-        edt = dt.datetime.fromisoformat(e_.replace("Z", "+00:00")).astimezone(IST)
+        sdt = dt.datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(UK_TZ)
+        edt = dt.datetime.fromisoformat(e_.replace("Z", "+00:00")).astimezone(UK_TZ)
         busy.append((sdt, edt))
     return busy
 
@@ -236,10 +308,9 @@ def has_overlap(start_a: datetime, end_a: datetime, ranges: List[Tuple[datetime,
             return True
     return False
 
-
-def find_next_available_2hour_slot(after: datetime = None) -> Tuple[datetime, datetime]:
-    """Find next available 2-hour slot after given datetime."""
-    now = after or datetime.now(IST)
+def find_next_available_2hour_slot(mentor_email: str = None, after: datetime = None) -> Tuple[datetime, datetime]:
+    """Find next available 2-hour slot for specific mentor after given datetime."""
+    now = after or datetime.now(UK_TZ)
     
     # Scan today and next 3 days
     for day_offset in range(0, 4):
@@ -249,12 +320,12 @@ def find_next_available_2hour_slot(after: datetime = None) -> Tuple[datetime, da
         if day_offset == 0 and now.hour >= 15:
             continue
             
-        print(f"🔍 Scanning {scan_date} for available slots...")
+        print(f"🔍 Scanning {scan_date} for {mentor_email or 'default'} available slots...")
         
-        # Get busy slots for the entire day
-        day_start = datetime.combine(scan_date, dt.time(9, 0), tzinfo=IST)
-        day_end = datetime.combine(scan_date, dt.time(17, 0), tzinfo=IST)
-        busy_slots = get_busy_slots(day_start, day_end)
+        # Get busy slots for the entire day for this mentor
+        day_start = datetime.combine(scan_date, dt.time(9, 0), tzinfo=UK_TZ)
+        day_end = datetime.combine(scan_date, dt.time(17, 0), tzinfo=UK_TZ)
+        busy_slots = get_busy_slots(day_start, day_end, mentor_email)
         
         # Check each 2-hour slot
         for start_hour, start_min, end_hour, end_min in AVAILABLE_TIME_SLOTS:
@@ -264,7 +335,7 @@ def find_next_available_2hour_slot(after: datetime = None) -> Tuple[datetime, da
                 day=scan_date.day,
                 hour=start_hour, 
                 minute=start_min, 
-                tzinfo=IST
+                tzinfo=UK_TZ
             )
             slot_end = datetime(
                 year=scan_date.year, 
@@ -272,97 +343,66 @@ def find_next_available_2hour_slot(after: datetime = None) -> Tuple[datetime, da
                 day=scan_date.day,
                 hour=end_hour, 
                 minute=end_min, 
-                tzinfo=IST
+                tzinfo=UK_TZ
             )
             
             # Skip if slot is in the past
             if slot_start <= now:
                 continue
                 
-            # Check if slot is free
+            # Check if slot is free for this mentor
             if not has_overlap(slot_start, slot_end, busy_slots):
-                print(f"✅ Found free slot: {slot_start.strftime('%Y-%m-%d %I:%M %p')} - {slot_end.strftime('%I:%M %p')}")
+                print(f"✅ Found free slot for {mentor_email or 'default'}: {slot_start.strftime('%Y-%m-%d %I:%M %p')} - {slot_end.strftime('%I:%M %p')}")
                 return slot_start, slot_end
             else:
-                print(f"❌ Slot busy: {slot_start.strftime('%Y-%m-%d %I:%M %p')} - {slot_end.strftime('%I:%M %p')}")
+                print(f"❌ Slot busy for {mentor_email or 'default'}: {slot_start.strftime('%Y-%m-%d %I:%M %p')} - {slot_end.strftime('%I:%M %p')}")
     
     # Fallback - schedule for next week Monday 9 AM
     next_monday = now + timedelta(days=(7 - now.weekday()))
-    fallback_start = datetime.combine(next_monday.date(), dt.time(9, 0), tzinfo=IST)
+    fallback_start = datetime.combine(next_monday.date(), dt.time(9, 0), tzinfo=UK_TZ)
     fallback_end = fallback_start + timedelta(hours=2)
     
-    print(f"⚠️ No slots available this week. Fallback: {fallback_start}")
+    print(f"⚠️ No slots available this week for {mentor_email or 'default'}. Fallback: {fallback_start}")
     return fallback_start, fallback_end
 
-def get_google_calendar_service():
-    """Alias for get_calendar_service() for backward compatibility"""
-    return get_calendar_service()
-
-def cancel_calendar_event(event_id):
-    """Cancel a Google Calendar event by its ID with proper error handling"""
-    if not event_id or event_id.strip() == "":
-        print("⚠️ No event_id provided for calendar cancellation")
-        return False
-        
-    try:
-        service = get_calendar_service()
-        service.events().delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
-        print(f"✅ Successfully cancelled calendar event: {event_id}")
-        return True
-        
-    except Exception as e:
-        error_msg = str(e)
-        
-        # Handle specific error cases
-        if "410" in error_msg or "deleted" in error_msg.lower():
-            print(f"ℹ️ Calendar event {event_id} was already deleted")
-            return True  # Consider this a success since the goal is achieved
-            
-        elif "404" in error_msg or "not found" in error_msg.lower():
-            print(f"ℹ️ Calendar event {event_id} not found (may have been manually deleted)")
-            return True  # Consider this a success since the goal is achieved
-            
-        elif "403" in error_msg or "forbidden" in error_msg.lower():
-            print(f"❌ Access denied for calendar event {event_id}")
-            return False
-            
-        else:
-            print(f"❌ Unexpected error cancelling calendar event {event_id}: {e}")
-            return False
-    
-def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[dict]:
+def get_next_available_slots_for_user(user_email: str, count: int = 5, mentor_email: str = None) -> List[dict]:
     """
-    Get multiple available slot options for a user across different days,
+    Get multiple available slot options for a user across different days for a specific mentor,
     respecting the 7-day gap from their last session.
     """
-    earliest_allowed = calculate_earliest_next_session(user_email)
+    # Use head mentor as default if not specified
+    if not mentor_email:
+        mentor_email = "vardaan@ukjobsinsider.com"
+    
+    # FIXED: Pass mentor_email to calculate earliest session
+    earliest_allowed = calculate_earliest_next_session(user_email, mentor_email)
     slots = []
     
     # Start from earliest allowed date
     current_date = earliest_allowed.date()
     days_checked = 0
-    max_days_to_check = 30  # Check up to 30 days
+    max_days_to_check = 30
     
-    print(f"📅 Finding {count} slots for {user_email} starting from {current_date}")
+    print(f"📅 Finding {count} slots for {user_email} with mentor {mentor_email} starting from {current_date}")
     
     while len(slots) < count and days_checked < max_days_to_check:
         check_date = current_date + timedelta(days=days_checked)
         
-        # Skip weekends (optional - remove if you want weekend slots)
-        if check_date.weekday() >= 5:  # Saturday=5, Sunday=6
+        # Skip weekends
+        if check_date.weekday() >= 5:
             days_checked += 1
             continue
         
         print(f"🔍 Checking {check_date} for available slots...")
         
-        # Get busy slots for this entire day
-        day_start = datetime.combine(check_date, dt.time(9, 0), tzinfo=IST)
-        day_end = datetime.combine(check_date, dt.time(17, 0), tzinfo=IST)
-        busy_slots = get_busy_slots(day_start, day_end)
+        # Get busy slots for this entire day for the specific mentor
+        day_start = datetime.combine(check_date, dt.time(9, 0), tzinfo=UK_TZ)
+        day_end = datetime.combine(check_date, dt.time(17, 0), tzinfo=UK_TZ)
+        busy_slots = get_busy_slots(day_start, day_end, mentor_email)
         
         # Track slots found for this day
         day_slots_found = 0
-        max_slots_per_day = 2  # Limit slots per day to get variety
+        max_slots_per_day = 2
         
         # Check each time slot for this day
         for start_hour, start_min, end_hour, end_min in AVAILABLE_TIME_SLOTS:
@@ -375,7 +415,7 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[d
                 day=check_date.day,
                 hour=start_hour,
                 minute=start_min,
-                tzinfo=IST
+                tzinfo=UK_TZ
             )
             slot_end = datetime(
                 year=check_date.year,
@@ -383,14 +423,14 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[d
                 day=check_date.day,
                 hour=end_hour,
                 minute=end_min,
-                tzinfo=IST
+                tzinfo=UK_TZ
             )
             
             # Skip if before earliest allowed time
             if slot_start < earliest_allowed:
                 continue
             
-            # Check if slot is available
+            # Check if slot is available for this mentor
             if not has_overlap(slot_start, slot_end, busy_slots):
                 print(f"✅ Found available slot: {slot_start.strftime('%Y-%m-%d %I:%M %p')} - {slot_end.strftime('%I:%M %p')}")
                 
@@ -398,11 +438,11 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[d
                     "start_time": slot_start,
                     "end_time": slot_end,
                     "formatted_date": slot_start.strftime('%A, %B %d'),
-                    "formatted_time": f"{slot_start.strftime('%I:%M %p')} - {slot_end.strftime('%I:%M %p')} IST",
+                    "formatted_time": f"{slot_start.strftime('%I:%M %p')} - {slot_end.strftime('%I:%M %p')} UK time",
                     "date_iso": slot_start.date().isoformat(),
                     "is_gap_compliant": slot_start >= earliest_allowed,
                     "day_name": slot_start.strftime('%A'),
-                    "full_datetime": slot_start.strftime('%A, %B %d, %Y at %I:%M %p IST')
+                    "full_datetime": slot_start.strftime('%A, %B %d, %Y at %I:%M %p UK_TZ')
                 })
                 
                 day_slots_found += 1
@@ -411,41 +451,20 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5) -> List[d
         
         days_checked += 1
     
-    print(f"📅 Found {len(slots)} available slots for {user_email}")
+    print(f"📅 Found {len(slots)} available slots for {user_email} with mentor {mentor_email}")
     return slots
 
-
-def cancel_google_calendar_event(event_id):
-    """
-    Cancels a Google Calendar event using its ID with enhanced error handling.
-    
-    Args:
-        event_id (str): The ID of the event to cancel
-        
-    Returns:
-        bool: True if cancellation was successful or event was already deleted, False otherwise
-    """
+def cancel_calendar_event(event_id, mentor_email: str = None):
+    """Cancel a Google Calendar event by its ID with proper error handling"""
     if not event_id or event_id.strip() == "":
         print("⚠️ No event_id provided for calendar cancellation")
         return False
         
     try:
-        service = get_google_calendar_service()
+        service, mentor_config = get_calendar_service(mentor_email)
+        calendar_id = mentor_config["calendar_id"]
         
-        # Try to get the event first to check if it exists
-        try:
-            service.events().get(calendarId='primary', eventId=event_id).execute()
-        except Exception as get_error:
-            if "410" in str(get_error) or "deleted" in str(get_error).lower():
-                print(f"ℹ️ Calendar event {event_id} is already deleted")
-                return True
-            elif "404" in str(get_error) or "not found" in str(get_error).lower():
-                print(f"ℹ️ Calendar event {event_id} not found")
-                return True
-            # If other error, continue with delete attempt
-        
-        # Delete the event
-        service.events().delete(calendarId='primary', eventId=event_id).execute()
+        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
         print(f"✅ Successfully cancelled calendar event: {event_id}")
         return True
         
@@ -456,24 +475,169 @@ def cancel_google_calendar_event(event_id):
             print(f"ℹ️ Calendar event {event_id} was already deleted")
             return True
         elif "404" in error_msg or "not found" in error_msg.lower():
-            print(f"ℹ️ Calendar event {event_id} not found")
+            print(f"ℹ️ Calendar event {event_id} not found (may have been manually deleted)")
             return True
-        else:
-            print(f"❌ Error cancelling calendar event {event_id}: {e}")
+        elif "403" in error_msg or "forbidden" in error_msg.lower():
+            print(f"❌ Access denied for calendar event {event_id}")
             return False
+        else:
+            print(f"❌ Unexpected error cancelling calendar event {event_id}: {e}")
+            return False
+
+def create_enhanced_event(
+    summary: str, 
+    description: str, 
+    start_time_ist: datetime,
+    end_time_ist: datetime, 
+    attendees: List[str],
+    mentor_email: str = None,
+    mentor_name: str = None,
+    student_name: str = None
+) -> dict:
+    """Creates enhanced calendar event in specific mentor's calendar with their meet link"""
+    
+    service, mentor_config = get_calendar_service(mentor_email)
+    calendar_id = mentor_config["calendar_id"]
+    meet_link = mentor_config["meet_link"]
+    
+    start_time_ist = _ensure_tz(start_time_ist).astimezone(UK_TZ)
+    end_time_ist = _ensure_tz(end_time_ist).astimezone(UK_TZ)
+    
+    # Enhanced description
+    duration_mins = int((end_time_ist - start_time_ist).total_seconds() / 60)
+    enhanced_description = f"""
+📋 MENTORSHIP SESSION DETAILS
+
+👨‍🏫 Mentor: {mentor_name or mentor_config["name"]}
+👨‍🎓 Student: {student_name or 'TBD'}
+⏱️ Duration: {duration_mins} minutes
+🎥 Google Meet: {meet_link}
+
+📧 Attendees:
+{chr(10).join([f"• {email}" for email in attendees])}
+
+💡 Session Guidelines:
+• Join 5 minutes early
+• Come prepared with questions
+• Take notes during the session
+• Follow up on action items
+
+{description}
+"""
+
+    event_body = {
+        "summary": summary,
+        "description": enhanced_description,
+        "start": {"dateTime": start_time_ist.isoformat(), "timeZone": "Europe/London"},  # FIXED: Changed from start_time_uk
+        "end": {"dateTime": end_time_ist.isoformat(), "timeZone": "Europe/London"},      # FIXED: Changed from end_time_uk
+        "location": f"Google Meet - {meet_link}",
+        "status": "confirmed",
+        "colorId": "2",
+        "reminders": {
+            "useDefault": False,
+            "overrides": [
+                {"method": "email", "minutes": 60},
+                {"method": "popup", "minutes": 15},
+            ]
+        }
+    }
+
+    try:
+        created = service.events().insert(
+            calendarId=calendar_id,
+            body=event_body,
+            sendUpdates="none"
+        ).execute()
+
+        print(f"✅ Event created in {mentor_email or 'default'}'s calendar: {created.get('htmlLink')}")
+        return {
+            "success": True,
+            "event_id": created.get("id"),
+            "html_link": created.get("htmlLink"),
+            "meet_link": meet_link,
+            "calendar_link": created.get("htmlLink"),
+            "start_time": start_time_ist,
+            "end_time": end_time_ist
+        }
+
+    except Exception as e:
+        print(f"❌ Error creating enhanced event in {mentor_email or 'default'}'s calendar: {e}")
+        return {"success": False, "error": str(e)}
+
+def schedule_specific_slot(student_email: str, mentor_email: str, 
+                         slot_start: datetime, slot_end: datetime,
+                         student_name: str = None, mentor_name: str = None) -> dict:
+    """
+    Schedule a session for a specific time slot in the mentor's calendar
+    """
+    try:
+        # Get mentor configuration
+        mentor_config = get_mentor_config(mentor_email)
         
+        # Verify the slot is still available in this mentor's calendar
+        busy_slots = get_busy_slots(
+            slot_start - timedelta(hours=1),
+            slot_end + timedelta(hours=1),
+            mentor_email
+        )
+        
+        if has_overlap(slot_start, slot_end, busy_slots):
+            return {
+                "success": False,
+                "error": "Selected time slot is no longer available. Please choose another slot."
+            }
+        
+        # Create attendees list
+        attendees = [student_email, mentor_email]
+        
+        # Create calendar event in mentor's calendar
+        summary = f"Mentorship Session: {student_name or 'Student'} & {mentor_name or mentor_config['name']}"
+        description = f"2-hour mentorship session between {student_name or 'student'} and {mentor_name or mentor_config['name']}"
+        
+        event_result = create_enhanced_event(
+            summary=summary,
+            description=description,
+            start_time_ist=slot_start,
+            end_time_ist=slot_end,
+            attendees=attendees,
+            mentor_email=mentor_email,
+            mentor_name=mentor_name or mentor_config["name"],
+            student_name=student_name
+        )
+        
+        if event_result["success"]:
+            return {
+                "success": True,
+                "message": f"✅ Session confirmed for {slot_start.strftime('%A, %B %d at %I:%M %p')} - {slot_end.strftime('%I:%M %p')} UK Tine",
+                "start_time": slot_start,
+                "end_time": slot_end,
+                "meet_link": event_result["meet_link"],
+                "calendar_link": event_result["calendar_link"],
+                "event_id": event_result["event_id"],
+                "mentor_name": mentor_name or mentor_config["name"]
+            }
+        else:
+            return {
+                "success": False,
+                "error": event_result["error"]
+            }
+            
+    except Exception as e:
+        print(f"❌ Error scheduling specific slot: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
                                      student_name, mentor_name, session_type):
     """
-    Send email invitations with 'Add to Google Calendar' button instead of broken calendar link.
+    Send email invitations with 'Add to Google Calendar' button.
     """
-    from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
-    import smtplib
-    import ssl
-    from urllib.parse import quote
 
-    # Generate Google Calendar URL
     def generate_google_calendar_url(summary, start_time, end_time, description, location=None):
         start_str = start_time.strftime("%Y%m%dT%H%M%S")
         end_str = end_time.strftime("%Y%m%dT%H%M%S")
@@ -506,7 +670,7 @@ def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
     🧑‍🎓 Student: {student_name}<br>
     🎓 Mentor: {mentor_name}<br>
     🗓 Date: {start_time.strftime('%A, %d %B %Y')}<br>
-    ⏰ Time: {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} IST<br>
+    ⏰ Time: {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} UK Time<br>
     📍 Meet Link: <a href="{meet_link}">{meet_link}</a><br><br>
 
     <a href="{calendar_url}" 
@@ -531,7 +695,7 @@ def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
             msg['From'] = settings.EMAIL_HOST_USER
             msg['To'] = recipient
             msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'html'))  # Use HTML format
+            msg.attach(MIMEText(body, 'html'))
 
             server.sendmail(settings.EMAIL_HOST_USER, recipient, msg.as_string())
             sent_count += 1
@@ -544,87 +708,101 @@ def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
         print(f"❌ Error sending email: {e}")
         return False
 
-
-
-def create_enhanced_event(
-    summary: str, 
-    description: str, 
-    start_time_ist: datetime,
-    end_time_ist: datetime, 
-    attendees: List[str],
-    mentor_name: str = None,
-    student_name: str = None
-) -> dict:
-    """Creates enhanced calendar event with detailed information"""
+# Helper functions for specific day/calendar operations
+def get_available_days_for_user(user_email: str, mentor_email: str = None, max_days: int = 7) -> List[dict]:
+    """Get list of days that have available slots for a user with specific mentor"""
+    if not mentor_email:
+        mentor_email = "vardaan@ukjobsinsider.com"
+        
+    # FIX 3: Pass mentor_email to calculate_earliest_next_session    
+    earliest_allowed = calculate_earliest_next_session(user_email, mentor_email)
+    available_days = []
     
-    service = get_calendar_service()
-    start_time_ist = _ensure_tz(start_time_ist).astimezone(IST)
-    end_time_ist = _ensure_tz(end_time_ist).astimezone(IST)
+    current_date = earliest_allowed.date()
+    days_checked = 0
     
-    # Enhanced description
-    duration_mins = int((end_time_ist - start_time_ist).total_seconds() / 60)
-    enhanced_description = f"""
-📋 MENTORSHIP SESSION DETAILS
-
-👨‍🏫 Mentor: {mentor_name or 'TBD'}
-👨‍🎓 Student: {student_name or 'TBD'}
-⏱️ Duration: {duration_mins} minutes
-🎥 Google Meet: {FIXED_MEET_LINK}
-
-📧 Attendees:
-{chr(10).join([f"• {email}" for email in attendees])}
-
-💡 Session Guidelines:
-• Join 5 minutes early
-• Come prepared with questions
-• Take notes during the session
-• Follow up on action items
-
-{description}
-"""
-
-    event_body = {
-        "summary": summary,
-        "description": enhanced_description,
-        "start": {"dateTime": start_time_ist.isoformat(), "timeZone": "Asia/Kolkata"},
-        "end": {"dateTime": end_time_ist.isoformat(), "timeZone": "Asia/Kolkata"},
-        "location": f"Google Meet - {FIXED_MEET_LINK}",
-        "status": "confirmed",
-        "colorId": "2",
-        # 🔴 REMOVE ATTENDEES FROM GOOGLE CALENDAR EVENT
-        # "attendees": [{"email": email} for email in attendees],
-        "reminders": {
-            "useDefault": False,
-            "overrides": [
-                {"method": "email", "minutes": 60},
-                {"method": "popup", "minutes": 15},
-        ]
-    }
-}
+    while len(available_days) < max_days and days_checked < 14:
+        check_date = current_date + timedelta(days=days_checked)
+        
+        if check_date.weekday() >= 5:
+            days_checked += 1
+            continue
+        
+        # FIX 4: Pass mentor_email to the helper function
+        day_slots = get_slots_for_specific_day_helper(user_email, check_date, mentor_email)
+        if day_slots:
+            available_days.append({
+                "day": check_date.strftime('%A'),
+                "date": check_date.isoformat(),
+                "formatted": check_date.strftime('%A, %B %d'),
+                "slots_count": len(day_slots)
+            })
+        
+        days_checked += 1
+    
+    return available_days
 
 
-    try:
-        created = service.events().insert(
-            calendarId=CALENDAR_ID,
-            body=event_body,
-            sendUpdates="none"  # Changed from "all" to prevent automatic emails
-        ).execute()
+def get_slots_for_specific_day_helper(student_email: str, target_date, mentor_email: str):
+    # FIX 1: Pass mentor_email to calculate_earliest_next_session
+    earliest_allowed = calculate_earliest_next_session(student_email, mentor_email)
 
-        print(f"✅ Event created: {created.get('htmlLink')}")
-        return {
-            "success": True,
-            "event_id": created.get("id"),
-            "html_link": created.get("htmlLink"),
-            "meet_link": FIXED_MEET_LINK,
-            "calendar_link": created.get("htmlLink"),
-            "start_time": start_time_ist,
-            "end_time": end_time_ist
+    if not mentor_email:
+        mentor_email = "vardaan@ukjobsinsider.com"
+        
+    if isinstance(target_date, str):
+        days_map = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 
+            'thursday': 3, 'friday': 4, 'saturday': 5, 'sunday': 6
         }
+        if target_date.lower() in days_map:
+            today = datetime.now(UK_TZ)
+            target_weekday = days_map[target_date.lower()]
+            current_weekday = today.weekday()
+            
+            days_ahead = target_weekday - current_weekday
+            if days_ahead <= 0:
+                days_ahead += 7
+            target_date = (today + timedelta(days=days_ahead)).date()
+    
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    
+    print(f"🔍 Checking slots for {target_date} with mentor {mentor_email}")
+    
+    # FIX 2: Use the correct mentor_email for busy slots check
+    day_start = datetime.combine(target_date, dt.time(9, 0), tzinfo=UK_TZ)
+    day_end = datetime.combine(target_date, dt.time(17, 0), tzinfo=UK_TZ)
+    busy_slots = get_busy_slots(day_start, day_end, mentor_email)
+    
+    available_slots = []
+    
+    # Loop through fixed available slots
+    for start_hour, start_min, end_hour, end_min in AVAILABLE_TIME_SLOTS:
+        slot_start = datetime(target_date.year, target_date.month, target_date.day,
+                              start_hour, start_min, tzinfo=UK_TZ)
+        slot_end = datetime(target_date.year, target_date.month, target_date.day,
+                            end_hour, end_min, tzinfo=UK_TZ)
+        
+        # Respect earliest allowed session
+        if slot_start < earliest_allowed:
+            continue
+        
+        if not has_overlap(slot_start, slot_end, busy_slots):
+            available_slots.append({
+                "start_time": slot_start,
+                "end_time": slot_end,
+                "formatted_date": slot_start.strftime('%A, %B %d'),
+                "formatted_time": f"{slot_start.strftime('%I:%M %p')} - {slot_end.strftime('%I:%M %p')} UK time",
 
-    except Exception as e:
-        print(f"❌ Error creating enhanced event: {e}")
-        return {"success": False, "error": str(e)}
+            })
+    
+    return available_slots
 
+# Backward compatibility functions
+def get_google_calendar_service():
+    """Alias for get_calendar_service() for backward compatibility"""
+    return get_calendar_service()
 
 def schedule_mentorship_session(student_email, mentor_email, student_name, mentor_name, selected_slot=None):
     """
@@ -650,7 +828,7 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
             slot_start = selected_slot["start_time"]
             slot_end = selected_slot["end_time"]
         else:
-            slot_start, slot_end = find_next_available_2hour_slot()
+            slot_start, slot_end = find_next_available_2hour_slot(mentor_email)
 
         # Create calendar event using create_enhanced_event
         summary = f"Mentorship Session: {student_name} & {mentor_name}"
@@ -662,6 +840,7 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
             start_time_ist=slot_start,
             end_time_ist=slot_end,
             attendees=attendees,
+            mentor_email=mentor_email,
             mentor_name=mentor_name,
             student_name=student_name
         )
@@ -696,174 +875,3 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
-
-
-def schedule_specific_slot(student_email: str, mentor_email: str, 
-                         slot_start: datetime, slot_end: datetime,
-                         student_name: str = None, mentor_name: str = None) -> dict:
-    """
-    Schedule a session for a specific time slot (used when user confirms a suggested slot)
-    """
-    try:
-        # Verify the slot is still available
-        busy_slots = get_busy_slots(
-            slot_start - timedelta(hours=1),
-            slot_end + timedelta(hours=1)
-        )
-        
-        if has_overlap(slot_start, slot_end, busy_slots):
-            return {
-                "success": False,
-                "error": "Selected time slot is no longer available. Please choose another slot."
-            }
-        
-        # Create attendees list
-        attendees = [student_email, mentor_email, CALENDAR_ID]
-        
-        # Create calendar event
-        summary = f"Mentorship Session: {student_name or 'Student'} & {mentor_name or 'Mentor'}"
-        description = f"2-hour mentorship session between {student_name or 'student'} and {mentor_name or 'mentor'}"
-        
-        event_result = create_enhanced_event(
-            summary=summary,
-            description=description,
-            start_time_ist=slot_start,
-            end_time_ist=slot_end,
-            attendees=attendees,
-            mentor_name=mentor_name,
-            student_name=student_name
-        )
-        
-        if event_result["success"]:
-            # REMOVED: Email sending from here to prevent duplicates
-            # Email will be sent from confirm_booking instead
-            
-            return {
-                "success": True,
-                "message": f"✅ Session confirmed for {slot_start.strftime('%A, %B %d at %I:%M %p')} - {slot_end.strftime('%I:%M %p')} IST",
-                "start_time": slot_start,
-                "end_time": slot_end,
-                "meet_link": event_result["meet_link"],
-                "calendar_link": event_result["calendar_link"],
-                "event_id": event_result["event_id"]
-            }
-        else:
-            return {
-                "success": False,
-                "error": event_result["error"]
-            }
-            
-    except Exception as e:
-        print(f"❌ Error scheduling specific slot: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-# Backward compatibility functions
-# Add these functions to your existing calendar_client.py (after your existing functions)
-
-def get_available_days_for_user(user_email: str, max_days: int = 7) -> List[dict]:
-    """
-    Get list of days that have available slots for a user
-    """
-    earliest_allowed = calculate_earliest_next_session(user_email)
-    available_days = []
-    
-    current_date = earliest_allowed.date()
-    days_checked = 0
-    
-    while len(available_days) < max_days and days_checked < 14:  # Check up to 14 days
-        check_date = current_date + timedelta(days=days_checked)
-        
-        # Skip weekends (optional)
-        if check_date.weekday() >= 5:
-            days_checked += 1
-            continue
-        
-        # Check if this day has any available slots
-        day_slots = get_slots_for_specific_day_helper(user_email, check_date)
-        if day_slots:
-            available_days.append({
-                "day": check_date.strftime('%A'),
-                "date": check_date.isoformat(),
-                "formatted": check_date.strftime('%A, %B %d'),
-                "slots_count": len(day_slots)
-            })
-        
-        days_checked += 1
-    
-    return available_days
-
-def get_slots_for_specific_day_helper(user_email: str, target_date) -> List[dict]:
-    """
-    Get available slots for a specific date (helper function)
-    """
-    if isinstance(target_date, str):
-        # If it's a day name like "monday", convert to actual date
-        days_map = {
-            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-            'friday': 4, 'saturday': 5, 'sunday': 6
-        }
-        
-        if target_date.lower() in days_map:
-            today = datetime.now(IST)
-            target_weekday = days_map[target_date.lower()]
-            current_weekday = today.weekday()
-            
-            days_ahead = target_weekday - current_weekday
-            if days_ahead <= 0:
-                days_ahead += 7
-            
-            target_date = (today + timedelta(days=days_ahead)).date()
-    
-    # Ensure we have a date object
-    if isinstance(target_date, datetime):
-        target_date = target_date.date()
-    
-    print(f"🔍 Checking slots for {target_date}")
-    
-    # Get busy slots for this entire day
-    day_start = datetime.combine(target_date, dt.time(9, 0), tzinfo=IST)
-    day_end = datetime.combine(target_date, dt.time(17, 0), tzinfo=IST)
-    busy_slots = get_busy_slots(day_start, day_end)
-    
-    available_slots = []
-    earliest_allowed = calculate_earliest_next_session(user_email)
-    
-    # Check each time slot for this day
-    for start_hour, start_min, end_hour, end_min in AVAILABLE_TIME_SLOTS:
-        slot_start = datetime(
-            year=target_date.year,
-            month=target_date.month,
-            day=target_date.day,
-            hour=start_hour,
-            minute=start_min,
-            tzinfo=IST
-        )
-        slot_end = datetime(
-            year=target_date.year,
-            month=target_date.month,
-            day=target_date.day,
-            hour=end_hour,
-            minute=end_min,
-            tzinfo=IST
-        )
-        
-        # Skip if before earliest allowed time
-        if slot_start < earliest_allowed:
-            continue
-        
-        # Check if slot is available
-        if not has_overlap(slot_start, slot_end, busy_slots):
-            available_slots.append({
-                "start_time": slot_start,
-                "end_time": slot_end,
-                "formatted_date": slot_start.strftime('%A, %B %d'),
-                "formatted_time": f"{slot_start.strftime('%I:%M %p')} - {slot_end.strftime('%I:%M %p')} IST"
-            })
-    
-    return available_slots

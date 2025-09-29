@@ -1,9 +1,7 @@
 # ---- Environment Files ----
 .env
 .env.*
-credentials.json
-credentials1.json
-credentials_vardaan.json
+
 
 # ---- Virtual Environments ----
 venv/

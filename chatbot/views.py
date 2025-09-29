@@ -31,7 +31,9 @@ from .calendar_client import (
     schedule_specific_slot,
     get_next_available_slots_for_user,
     send_enhanced_manual_invitations,
-     cancel_calendar_event
+    cancel_calendar_event,
+    get_mentor_config,
+    MENTOR_CONFIG
 )
 from django.utils import timezone
 from .emails import send_cancellation_email
@@ -41,8 +43,8 @@ try:
 except ImportError:
     dateutil_parser = None
 
-  # ensure import
-IST = timezone.get_fixed_timezone(5*60 + 30)
+from zoneinfo import ZoneInfo
+UK_TZ = ZoneInfo("Europe/London")
 
 # Domain mappings for mentors - Based on your actual mentor expertise
 DOMAIN_KEYWORDS = {
@@ -56,6 +58,7 @@ DOMAIN_KEYWORDS = {
     'finance': ['finance', 'accounting', 'investment', 'banking', 'financial analysis'],
     'hr': ['hr', 'human resources', 'recruitment', 'talent', 'people management']
 }
+
 def is_cancel_request(message: str) -> bool:
     """Check if the message is a cancellation request"""
     lower = message.lower()
@@ -69,13 +72,13 @@ def is_cancel_request(message: str) -> bool:
     return any(keyword in lower for keyword in cancel_keywords)
 
 def ensure_timezone_aware(dt_obj):
-    """Ensure datetime object is timezone-aware in IST"""
+    """Ensure datetime object is timezone-aware in UK_TZ"""
     from django.utils import timezone
     
     if dt_obj is None:
         return None
         
-    IST = timezone.get_fixed_timezone(5*60 + 30)
+    UK_TZ = timezone.get_fixed_timezone(5*60 + 30)
     
     if isinstance(dt_obj, str):
         from django.utils.dateparse import parse_datetime
@@ -84,7 +87,7 @@ def ensure_timezone_aware(dt_obj):
             raise ValueError(f"Cannot parse datetime: {dt_obj}")
     
     if dt_obj.tzinfo is None:
-        dt_obj = timezone.make_aware(dt_obj, IST)
+        dt_obj = timezone.make_aware(dt_obj, UK_TZ)
     
     return dt_obj
 
@@ -101,10 +104,6 @@ def detect_domain_from_message(message: str) -> str:
                 return domain
     
     return 'general'
-
-# Temporary dummy function for testing
-
-
 
 def get_random_mentor_by_domain(domain: str) -> Mentor:
     """
@@ -208,7 +207,6 @@ def get_user_data(email: str) -> dict | None:
         print(f"❌ Error reading users.csv: {e}")
     return None
 
-
 def is_email_allowed(email: str) -> bool:
     """Check if email exists in users.csv"""
     return get_user_data(email) is not None
@@ -226,7 +224,6 @@ def test_email_send(request):
         success = send_enhanced_manual_invitations(
             attendees=[request.user.email, "test@example.com"],
             meet_link="https://meet.google.com/test",
-            calendar_link="https://calendar.google.com/test",
             start_time=datetime.now(),
             end_time=datetime.now() + timedelta(hours=2),
             student_name=request.user.username,
@@ -248,14 +245,6 @@ class SignupView(APIView):
 
     def post(self, request):
         try:
-            # Add this debug code
-            csv_path = os.path.join(settings.BASE_DIR, "users.csv")
-            print(f"🔍 CSV exists: {os.path.exists(csv_path)}")
-            if os.path.exists(csv_path):
-                print(f"📋 CSV is readable: {os.access(csv_path, os.R_OK)}")
-                with open(csv_path, 'r') as f:
-                    print(f"📝 CSV content:\n{f.read()}")
-            
             if request.content_type == 'application/json':
                 data = json.loads(request.body)
             else:
@@ -269,17 +258,10 @@ class SignupView(APIView):
                 return Response({"error": "Email and password are required"},
                                 status=status.HTTP_400_BAD_REQUEST)
 
-            # Debug email check
-            print(f"🔍 Checking if email is allowed: {email}")
-            is_allowed = is_email_allowed(email)
-            print(f"✅ Email allowed result: {is_allowed}")
-            
-            if not is_allowed:
+            if not is_email_allowed(email):
                 return Response({
                     "error": "This email is not allowed to signup. Please contact support."
                 }, status=status.HTTP_403_FORBIDDEN)
-
-            # Rest of your code...
 
             if User.objects.filter(email=email).exists():
                 return Response({"error": "User already exists"},
@@ -357,8 +339,9 @@ class LoginView(APIView):
                 "is_premium": is_premium
             }
         }, status=200)
+
 def to_aware_datetime(dt_str_or_dt):
-    IST = timezone.get_fixed_timezone(5*60 + 30)
+    UK_TZ = timezone.get_fixed_timezone(5*60 + 30)
     
     if isinstance(dt_str_or_dt, str):
         dt = parse_datetime(dt_str_or_dt)
@@ -368,7 +351,7 @@ def to_aware_datetime(dt_str_or_dt):
         dt = dt_str_or_dt
 
     if dt.tzinfo is None:
-        dt = timezone.make_aware(dt, IST)
+        dt = timezone.make_aware(dt, UK_TZ)
     return dt
 
 @method_decorator(csrf_exempt, name="dispatch")  
@@ -442,7 +425,7 @@ def list_mentors(request):
     try:
         profile = UserProfile.objects.get(user=request.user)
         if not profile.is_premium:
-            return Response({"error": "Only premium users can access mentors"}, status=403)
+            return Response({"error": "Only Plus users can access mentors"}, status=403)
     except UserProfile.DoesNotExist:
         return Response({"error": "Profile not found"}, status=404)
 
@@ -510,7 +493,7 @@ This is a test email from your Django mentorship booking system.
 If you receive this email, your email configuration is working perfectly! ✅
 
 Test Details:
-- Sent at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}  
+- Sent at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UK_TZ')}  
 - From: {settings.EMAIL_HOST_USER}
 - To: {request.user.email}
 
@@ -545,8 +528,6 @@ UK Jobs Team
         traceback.print_exc()
         return Response({"error": str(e)}, status=500)
     
-# IST timezone
-
 class CancelRescheduleView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -584,7 +565,7 @@ class CancelRescheduleView(APIView):
         session_info = {
             'event_id': getattr(last_session, 'event_id', None),
             'start_time': last_session.start_time,
-            'mentor_name': last_session.mentor.user.username if last_session.mentor else "Mentor",
+            'mentor_email': last_session.mentor.user.email if last_session.mentor else None,
             'student_name': user.username
         }
 
@@ -597,18 +578,16 @@ class CancelRescheduleView(APIView):
         calendar_cancelled = False
         if session_info['event_id']:
             try:
-                # Import the improved cancel function
-                from .calendar_client import cancel_calendar_event
-                calendar_cancelled = cancel_calendar_event(session_info['event_id'])
+                # Get mentor email for cancellation
+                mentor_email = session_info['mentor_email']
+                if mentor_email:
+                    calendar_cancelled = cancel_calendar_event(session_info['event_id'], mentor_email)
                 
                 if calendar_cancelled:
                     print(f"✅ Calendar event {session_info['event_id']} cancelled successfully")
                 else:
                     print(f"⚠️ Calendar event {session_info['event_id']} cancellation had issues")
                     
-            except ImportError as import_err:
-                print(f"⚠️ Could not import calendar function: {import_err}")
-                
             except Exception as cal_err:
                 print(f"⚠️ Calendar cancellation error: {cal_err}")
         else:
@@ -624,9 +603,6 @@ class CancelRescheduleView(APIView):
             mentor_name = mentor_profile.user.first_name or mentor_profile.user.username if mentor_profile else "Mentor"
 
             if student_email and mentor_email:
-                # Import and use the fixed email function
-                from .emails import send_cancellation_email
-                
                 email_sent = send_cancellation_email(
                     session=last_session,
                     student_email=student_email,
@@ -643,9 +619,6 @@ class CancelRescheduleView(APIView):
             else:
                 print(f"⚠️ Missing email addresses: student={student_email}, mentor={mentor_email}")
                 
-        except ImportError as import_err:
-            print(f"⚠️ Could not import email function: {import_err}")
-            
         except Exception as email_err:
             print(f"⚠️ Failed to send cancellation emails: {email_err}")
             import traceback
@@ -679,19 +652,16 @@ class CancelRescheduleView(APIView):
             {"message": message},
             status=status.HTTP_200_OK
         )
-
         
 class ScheduleView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
 
-    HEAD_EMAIL = "sunilramtri000@gmail.com"
-    HEAD_NAME = "Vardaan Shekhawat (Head Mentor)"
-
     def post(self, request):
         try:
             print("📌 [DEBUG] ScheduleView POST called")
-
+            self.request = request  # Store request for use in helper methods
+            
             data = request.data
             mentor_id = data.get("mentor_id")
             selected_slot = data.get("selected_slot")
@@ -704,19 +674,21 @@ class ScheduleView(APIView):
             print(f"👀 {request.user.email} session_count: {profile.session_count}")
 
             if not profile.is_premium:
-                return Response({"error": "Only premium users can book sessions."}, status=403)
+                return Response({"error": "Only Plus users can book sessions."}, status=403)
 
             # PRIORITY 1: HEAD mentor case (ONLY for first-time users OR explicit head request)
             if mentor_id == "head" or (is_first_time_user(request.user) and mentor_id is None):
-                head_email = "sunilramtri000@gmail.com"
-                head_name = "Sunil (Head Mentor)"
+                # Get head mentor configuration
+                head_config = MENTOR_CONFIG.get("head")
+                head_email = head_config["email"]
+                head_name = head_config["name"]
                 print(f"🎯 [HEAD] Using head mentor: {head_email}")
 
-                # Get available slots for head mentor
+                # FIX 7: Get available slots for head mentor with correct parameters
                 if preferred_day:
                     available_slots = self.get_slots_for_specific_day(head_email, preferred_day)
                 else:
-                    available_slots = get_next_available_slots_for_user(head_email, count=1)
+                    available_slots = get_next_available_slots_for_user(request.user.email, count=1, mentor_email=head_email)
 
                 if not available_slots:
                     return Response({
@@ -767,7 +739,7 @@ class ScheduleView(APIView):
                     if preferred_day:
                         available_slots = self.get_slots_for_specific_day(mentor_email, preferred_day)
                     else:
-                        available_slots = get_next_available_slots_for_user(mentor_email, count=1)
+                        available_slots = get_next_available_slots_for_user(request.user.email, count=1, mentor_email=mentor_email)
 
                     if not available_slots:
                         return Response({
@@ -817,8 +789,9 @@ class ScheduleView(APIView):
 
                 if not selected_mentor or not getattr(selected_mentor.user, "email", None):
                     print(f"⚠️ No valid mentor for {domain}, falling back to HEAD")
-                    mentor_email = self.HEAD_EMAIL
-                    mentor_name = self.HEAD_NAME
+                    head_config = MENTOR_CONFIG.get("head")
+                    mentor_email = head_config["email"]
+                    mentor_name = head_config["name"]
                     selected_mentor = None
                 else:
                     mentor_email = selected_mentor.user.email.strip()
@@ -829,7 +802,7 @@ class ScheduleView(APIView):
                 if preferred_day:
                     available_slots = self.get_slots_for_specific_day(mentor_email, preferred_day)
                 else:
-                    available_slots = get_next_available_slots_for_user(mentor_email, count=1)
+                    available_slots = get_next_available_slots_for_user(request.user.email, count=1, mentor_email=mentor_email)
 
                 if not available_slots:
                     return Response({
@@ -883,7 +856,6 @@ class ScheduleView(APIView):
             print(f"🔧 [BOOKING] Starting confirmation for {user.email}")
             print(f"🔧 [BOOKING] Selected slot: {selected_slot}")
             print(f"🔧 [BOOKING] Mentor email: {mentor_email}")
-            print(f"🔧 [BOOKING] Display name: {display_name}")
             
             # Validate slot data
             if not isinstance(selected_slot, dict):
@@ -918,14 +890,16 @@ class ScheduleView(APIView):
                 return Response({"error": "Could not parse datetime strings"}, status=400)
 
             # Ensure timezone awareness
-            IST = timezone.get_fixed_timezone(5*60 + 30)
+            UK_TZ = timezone.get_fixed_timezone(5*60 + 30)
             if slot_start.tzinfo is None:
-                slot_start = timezone.make_aware(slot_start, IST)
+                slot_start = timezone.make_aware(slot_start, UK_TZ)
             if slot_end.tzinfo is None:
-                slot_end = timezone.make_aware(slot_end, IST)
+                slot_end = timezone.make_aware(slot_end, UK_TZ)
 
-            # IMPORTANT: Don't override mentor_email here - use the one passed in
-            print(f"🔧 [BOOKING] Final mentor email (not changed): {mentor_email}")
+            # Get mentor configuration
+            mentor_config = get_mentor_config(mentor_email)
+            mentor_display_name = mentor_config["name"]
+
             print(f"🔧 [BOOKING] Calling schedule_specific_slot...")
             print(f"  - Student: {user.email}")
             print(f"  - Mentor: {mentor_email}")
@@ -939,7 +913,7 @@ class ScheduleView(APIView):
                     slot_start=slot_start,
                     slot_end=slot_end,
                     student_name=user.username,
-                    mentor_name=display_name
+                    mentor_name=mentor_display_name
                 )
                 print(f"🔧 [BOOKING] Schedule result: {result}")
                 
@@ -981,7 +955,7 @@ class ScheduleView(APIView):
                     start_time=result["start_time"],
                     end_time=result["end_time"],
                     student_name=user.username,
-                    mentor_name=display_name,
+                    mentor_name=mentor_display_name,
                     session_type="1-on-1 Mentorship"
                 )
                 print(f"✅ [BOOKING] Email sent to {mentor_email}")
@@ -997,15 +971,15 @@ class ScheduleView(APIView):
             
             return Response({
                 "success": True,
-                "message": f"Your session with {display_name} is confirmed for {start_formatted} IST!",
+                "message": f"Your session with {mentor_display_name} is confirmed for {start_formatted} UK_TZ!",
                 "booking_id": booking.id,
                 "meet_link": result["meet_link"],
                 "calendar_link": result.get("calendar_link", ""),
                 "start_time": result["start_time"].isoformat(),
                 "end_time": result["end_time"].isoformat(),
-                "session_type": display_name,
+                "session_type": mentor_display_name,
                 "session_count": profile.session_count,
-                "mentor_name": display_name,
+                "mentor_name": mentor_display_name,
                 "mentor_email": mentor_email  # For debugging
             }, status=200)
 
@@ -1015,20 +989,22 @@ class ScheduleView(APIView):
             return Response({"error": f"Booking failed: {str(e)}"}, status=500)
 
     # Keep other methods unchanged
-    def get_available_days(self, email):
+    def get_available_days(self, mentor_email):
         """Get list of days in next 7 days that have available slots"""
         try:
             from .calendar_client import get_available_days_for_user
-            return get_available_days_for_user(email, max_days=7)
+            # FIX 5: Pass current user's email AND mentor_email
+            return get_available_days_for_user(self.request.user.email, mentor_email, max_days=7)
         except Exception as e:
             print(f"❌ Error getting available days: {e}")
             return []
 
-    def get_slots_for_specific_day(self, email, day_name):
+    def get_slots_for_specific_day(self, mentor_email, day_name):
         """Get available slots for a specific day"""
         try:
             from .calendar_client import get_slots_for_specific_day_helper
-            return get_slots_for_specific_day_helper(email, day_name)
+            # FIX 6: Pass current user's email AND mentor_email
+            return get_slots_for_specific_day_helper(self.request.user.email, day_name, mentor_email)
         except Exception as e:
             print(f"❌ Error getting slots for day: {e}")
             return []
@@ -1049,146 +1025,6 @@ class ScheduleView(APIView):
         }
         return descriptions.get(domain, f'{domain.title()} Expertise')
 
-    def confirm_booking(self, user, mentor_email, display_name, selected_slot, profile, mentor=None):
-        """Confirm and create the booking with enhanced error handling"""
-        try:
-            print(f"🔧 [BOOKING] Starting confirmation for {user.email}")
-            print(f"🔧 [BOOKING] Selected slot: {selected_slot}")
-            print(f"🔧 [BOOKING] Mentor email: {mentor_email}")
-            
-            # Validate slot data
-            if not isinstance(selected_slot, dict):
-                print(f"❌ [BOOKING] Invalid slot format: {type(selected_slot)}")
-                return Response({"error": "Invalid slot data format"}, status=400)
-            
-            slot_start_str = selected_slot.get("start_time")
-            slot_end_str = selected_slot.get("end_time")
-            
-            if not slot_start_str or not slot_end_str:
-                print(f"❌ [BOOKING] Missing times: start={slot_start_str}, end={slot_end_str}")
-                return Response({"error": "Missing start_time or end_time"}, status=400)
-
-            # Parse datetime strings with multiple fallback methods
-            try:
-                # Method 1: Django's parse_datetime
-                slot_start = parse_datetime(slot_start_str) if isinstance(slot_start_str, str) else slot_start_str
-                slot_end = parse_datetime(slot_end_str) if isinstance(slot_end_str, str) else slot_end_str
-                
-                # Method 2: dateutil parser (if Django fails)
-                if slot_start is None and dateutil_parser and isinstance(slot_start_str, str):
-                    slot_start = dateutil_parser.parse(slot_start_str)
-                if slot_end is None and dateutil_parser and isinstance(slot_end_str, str):
-                    slot_end = dateutil_parser.parse(slot_end_str)
-                
-                print(f"🔧 [BOOKING] Parsed times: start={slot_start}, end={slot_end}")
-                
-            except Exception as parse_error:
-                print(f"❌ [BOOKING] Datetime parsing failed: {parse_error}")
-                return Response({"error": f"Invalid datetime format: {str(parse_error)}"}, status=400)
-            
-            if not slot_start or not slot_end:
-                return Response({"error": "Could not parse datetime strings"}, status=400)
-
-            # Ensure timezone awareness
-            IST = timezone.get_fixed_timezone(5*60 + 30)
-            if slot_start.tzinfo is None:
-                slot_start = timezone.make_aware(slot_start, IST)
-            if slot_end.tzinfo is None:
-                slot_end = timezone.make_aware(slot_end, IST)
-
-            # Correct head mentor email
-            if mentor_email == "head":
-                mentor_email = "sunilramtri000@gmail.com"
-
-            print(f"🔧 [BOOKING] Calling schedule_specific_slot...")
-            print(f"  - Student: {user.email}")
-            print(f"  - Mentor: {mentor_email}")
-            print(f"  - Times: {slot_start} to {slot_end}")
-
-            # Schedule the session
-            try:
-                result = schedule_specific_slot(
-                    student_email=user.email,
-                    mentor_email=mentor_email,
-                    slot_start=slot_start,
-                    slot_end=slot_end,
-                    student_name=user.username,
-                    mentor_name=display_name
-                )
-                print(f"🔧 [BOOKING] Schedule result: {result}")
-                
-            except Exception as schedule_error:
-                print(f"❌ [BOOKING] Scheduling failed: {schedule_error}")
-                traceback.print_exc()
-                return Response({"error": f"Scheduling failed: {str(schedule_error)}"}, status=500)
-
-            if not result.get("success"):
-                error_msg = result.get("error", "Unknown scheduling error")
-                print(f"❌ [BOOKING] Scheduling error: {error_msg}")
-                return Response({"error": error_msg}, status=500)
-
-            # Create booking record
-            try:
-                booking = SessionBooking.objects.create(
-                    user=user,
-                    mentor=mentor,
-                    organizer="UK Jobs Mentorship System",
-                    start_time=result["start_time"],
-                    end_time=result["end_time"],
-                    meet_link=result.get("meet_link", ""),
-                    attendees=[user.email, mentor_email],
-                    event_id=result.get("event_id", ""),
-                    status="confirmed"
-                )
-                print(f"✅ [BOOKING] Created booking: {booking.id}")
-
-            except Exception as db_error:
-                print(f"❌ [BOOKING] Database error: {db_error}")
-                traceback.print_exc()
-                return Response({"error": f"Failed to save booking: {str(db_error)}"}, status=500)
-
-            # Send email (non-blocking)
-            try:
-                send_enhanced_manual_invitations(
-                    attendees=[user.email, mentor_email],
-                    meet_link=result["meet_link"],
-                    start_time=result["start_time"],
-                    end_time=result["end_time"],
-                    student_name=user.username,
-                    mentor_name=display_name,
-                    session_type="1-on-1 Mentorship"
-                )
-                print(f"✅ [BOOKING] Email sent")
-            except Exception as email_error:
-                print(f"⚠️ [BOOKING] Email failed (non-critical): {email_error}")
-
-            # Update session count
-            profile.session_count += 1
-            profile.save()
-
-            # Format response
-            start_formatted = result["start_time"].strftime('%A, %B %d at %I:%M %p')
-            
-            return Response({
-                "success": True,
-                "message": f"Your session with {display_name} is confirmed for {start_formatted} IST!",
-                "booking_id": booking.id,
-                "meet_link": result["meet_link"],
-                "calendar_link": result.get("calendar_link", ""),
-                "start_time": result["start_time"].isoformat(),
-                "end_time": result["end_time"].isoformat(),
-                "session_type": display_name,
-                "session_count": profile.session_count,
-                "mentor_name": display_name
-            }, status=200)
-
-        except Exception as e:
-            print(f"❌ [BOOKING] Unexpected error: {e}")
-            traceback.print_exc()
-            return Response({"error": f"Booking failed: {str(e)}"}, status=500)
-
-
-
 class AvailableSlotsView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -1208,7 +1044,7 @@ class AvailableSlotsView(APIView):
                     available_slots.append({
                         "start_time": start_time.isoformat(),
                         "end_time": end_time.isoformat(),
-                        "formatted_time": f"{start_time.strftime('%A, %B %d at %I:%M %p')} - {end_time.strftime('%I:%M %p')} IST",
+                        "formatted_time": f"{start_time.strftime('%A, %B %d at %I:%M %p')} - {end_time.strftime('%I:%M %p')} UK_TZ",
                         "duration_hours": 2
                     })
                     # Move to next day to find next slot
@@ -1245,7 +1081,7 @@ class ChatView(APIView):
             if is_cancel_request(message):
                 if not is_premium:
                     return Response({
-                        "reply": "⚠️ Only premium users can manage sessions. Please upgrade to premium.",
+                        "reply": "⚠️ Only Plus users can manage sessions. Please upgrade to premium.",
                         "mentors": None
                     }, status=200)
                 
@@ -1271,11 +1107,11 @@ class ChatView(APIView):
 
                 # Ensure timezone aware
                 from django.utils import timezone
-                IST = timezone.get_fixed_timezone(5*60 + 30)
+                UK_TZ = timezone.get_fixed_timezone(5*60 + 30)
                 if session_start.tzinfo is None:
-                    session_start = timezone.make_aware(session_start, IST)
+                    session_start = timezone.make_aware(session_start, UK_TZ)
 
-                session_time_ist = session_start.astimezone(IST).strftime('%d %b %Y, %I:%M %p')
+                session_time_ist = session_start.astimezone(UK_TZ).strftime('%d %b %Y, %I:%M %p')
                 mentor_name = last_session.mentor.user.username if last_session.mentor else "Mentor"
 
                 return Response({
@@ -1292,7 +1128,7 @@ class ChatView(APIView):
             if is_meeting_request(message):
                 if not is_premium:
                     return Response({
-                        "reply": "⚠️ Only premium users can book mentorship sessions. Please upgrade to premium.",
+                        "reply": "⚠️ Only Plus users can book mentorship sessions. Please upgrade to premium.",
                         "mentors": None
                     }, status=200)
                 
@@ -1301,11 +1137,12 @@ class ChatView(APIView):
                 
                 if is_first_time_user(request.user):
                     # First time user - show head mentor only
+                    head_config = MENTOR_CONFIG.get("head")
                     head_mentor = {
                         "id": "head",
-                        "username": "Vardaan (Head Mentor)",
-                        "email": "sunilramtri000@gmail.com",
-                        "expertise": "Initial Assessment & Career Guidance"
+                        "username": head_config["name"],
+                        "email": head_config["email"],
+                        "expertise": "One on One Mentorship with Vardaan"
                     }
                     
                     return Response({
@@ -1372,7 +1209,7 @@ def get_mentors_by_domain(request):
         
         profile = UserProfile.objects.filter(user=request.user).first()
         if not profile or not profile.is_premium:
-            return Response({"error": "Only premium users can access mentors"}, status=403)
+            return Response({"error": "Only Plus users can access mentors"}, status=403)
         
         if domain == 'general':
             mentors = Mentor.objects.filter(is_active=True).select_related("user")
