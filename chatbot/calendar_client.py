@@ -12,86 +12,101 @@ from django.core.mail import EmailMessage
 import ssl
 from urllib.parse import quote
 import json
+from django.db import transaction
+from django.core.exceptions import ValidationError
+from functools import lru_cache
+
+# Import models
+from .models import TimeSlot, EnhancedSessionBooking, Mentor, UserProfile
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 from zoneinfo import ZoneInfo
 UK_TZ = ZoneInfo("Europe/London")
-# MENTOR CONFIGURATION - Add new mentors here
+
+# MENTOR CONFIGURATION - Using single credentials file for all mentors
 MENTOR_CONFIG = {
     "head": {
         "name": "Vardaan (Head Mentor)",
-        "email": "vardaan@ukjobsinsider.com",
-        "credentials_file": "credentials_vardaan.json",
-        "meet_link": "https://meet.google.com/head-mentor-link",
-        "calendar_id": "vardaan@ukjobsinsider.com"
-    },
-    #  "vaidaansh": {
-    #     "name": "Vaidaansh Mentor", 
-    #     "email": "vaidaansh1shekhawat@gmail.com",
-    #     "credentials_file": "credentials_vaidaansh.json",
-    #     "meet_link": "https://meet.google.com/gbv-mkux-scx",
-    #     "calendar_id": "vaidaansh1shekhawat@gmail.com"
-    # },
-    "kapil": {
-        "name": "kapil Mentor", 
-        "email": "kapilsanjaykanjani@gmail.com",
-        "credentials_file": "credentials_kapil.json",
+        "email": "sunilramtri000@gmail.com",
+        "credentials_file": "credsam.json",  # Same file for all
         "meet_link": "https://meet.google.com/gbv-mkux-scx",
+        "calendar_id": "sunilramtri000@gmail.com"
+    },
+    "kapil": {
+        "name": "Kapil Mentor", 
+        "email": "kapilsanjaykanjani@gmail.com",
+        "credentials_file": "credsam.json",  # Same file
+        "meet_link": "https://meet.google.com/csx-bkoy-sct",
         "calendar_id": "kapilsanjaykanjani@gmail.com"
     },
     "meena": {
         "name": "Meena Mentor", 
-        "email": "meenavalavala@gmail.com",  # Updated with actual email
-        "credentials_file": "credentials1.json",
+        "email": "meenavalavala@gmail.com",
+        "credentials_file": "credsam.json",  # Same file
         "meet_link": "https://meet.google.com/csx-bkoy-sct",
-        "calendar_id": "meenavalavala@gmail.com"  # Updated with actual email
+        "calendar_id": "meenavalavala@gmail.com"
     },
-        "amit": {
-        "name": "amit Mentor", 
-        "email": "sunilramtri000@gmail.com",  # Updated with actual email
-        "credentials_file": "credentials.json",
+    "amit": {
+        "name": "Amit Mentor", 
+        "email": "amit@example.com",
+        "credentials_file": "credsam.json",  # Same file
         "meet_link": "https://meet.google.com/csx-bkoy-sct",
-        "calendar_id": "sunilramtri000@gmail.com"  # Updated with actual email
+        "calendar_id": "amit@example.com"
     },
-        "Simran": {
+    "simran": {
         "name": "Simran Mentor", 
-        "email": "simranchetanshah98@gmail.com",  # Updated with actual email
-        "credentials_file": "credentials_simran.json",
+        "email": "simranchetanshah98@gmail.com",
+        "credentials_file": "credsam.json",  # Same file
         "meet_link": "https://meet.google.com/vbu-xbhk-dji",
-        "calendar_id": "simranchetanshah98@gmail.com"  # Updated with actual email
+        "calendar_id": "simranchetanshah98@gmail.com"
     }
 }
 
-# Fallback configuration (your original setup)
+# Fallback configuration
 DEFAULT_MENTOR_CONFIG = {
-    "credentials_file": "credentials1.json",
+    "credentials_file": "credsam.json",  # Single credentials file
     "meet_link": "https://meet.google.com/csx-bkoy-sct",
     "calendar_id": "meenavalavala@gmail.com"
 }
 
-# 2-hour time slots (9 AM - 5 PM)
+# 15-minute time slots (9 AM - 5 PM)
 AVAILABLE_TIME_SLOTS = [
-    (9, 0, 11, 0),   # 9:00 AM - 11:00 AM
-    (11, 0, 13, 0),  # 11:00 AM - 1:00 PM  
-    (13, 0, 15, 0),  # 1:00 PM - 3:00 PM
-    (15, 0, 17, 0),  # 3:00 PM - 5:00 PM
+    (9, 0, 9, 15),   # 9:00 AM - 9:15 AM
+    (9, 15, 9, 30),  # 9:15 AM - 9:30 AM
+    (9, 30, 9, 45),  # 9:30 AM - 9:45 AM
+    (9, 45, 10, 0),  # 9:45 AM - 10:00 AM
+    (10, 0, 10, 15), # 10:00 AM - 10:15 AM
+    (10, 15, 10, 30),# 10:15 AM - 10:30 AM
+    (10, 30, 10, 45),# 10:30 AM - 10:45 AM
+    (10, 45, 11, 0), # 10:45 AM - 11:00 AM
+    (11, 0, 11, 15), # 11:00 AM - 11:15 AM
+    (11, 15, 11, 30),# 11:15 AM - 11:30 AM
+    (11, 30, 11, 45),# 11:30 AM - 11:45 AM
+    (11, 45, 12, 0), # 11:45 AM - 12:00 PM
+    (12, 0, 12, 15), # 12:00 PM - 12:15 PM
+    (12, 15, 12, 30),# 12:15 PM - 12:30 PM
+    (12, 30, 12, 45),# 12:30 PM - 12:45 PM
+    (12, 45, 13, 0), # 12:45 PM - 1:00 PM
+    (13, 0, 13, 15), # 1:00 PM - 1:15 PM
+    (13, 15, 13, 30),# 1:15 PM - 1:30 PM
+    (13, 30, 13, 45),# 1:30 PM - 1:45 PM
+    (13, 45, 14, 0), # 1:45 PM - 2:00 PM
+    (14, 0, 14, 15), # 2:00 PM - 2:15 PM
+    (14, 15, 14, 30),# 2:15 PM - 2:30 PM
+    (14, 30, 14, 45),# 2:30 PM - 2:45 PM
+    (14, 45, 15, 0), # 2:45 PM - 3:00 PM
+    (15, 0, 15, 15), # 3:00 PM - 3:15 PM
+    (15, 15, 15, 30),# 3:15 PM - 3:30 PM
+    (15, 30, 15, 45),# 3:30 PM - 3:45 PM
+    (15, 45, 16, 0), # 3:45 PM - 4:00 PM
+    (16, 0, 16, 15), # 4:00 PM - 4:15 PM
+    (16, 15, 16, 30),# 4:15 PM - 4:30 PM
+    (16, 30, 16, 45),# 4:30 PM - 4:45 PM
+    (16, 45, 17, 0), # 4:45 PM - 5:00 PM
 ]
 
 # Minimum gap between sessions (7 days)
 MIN_SESSION_GAP_DAYS = 7
-
-# Add this debug function in calendar_client.py
-# def debug_mentor_matching(mentor_email: str):
-#     """Debug mentor configuration matching"""
-#     print(f"🔍 [DEBUG] Looking for mentor: '{mentor_email}'")
-#     print(f"🔍 [DEBUG] Available mentors:")
-    
-#     for mentor_key, config in MENTOR_CONFIG.items():
-#         config_email = config["email"]
-#         print(f"  - {mentor_key}: '{config_email}' (match: {config_email.lower() == mentor_email.lower()})")
-
-
-# Test this in Django shell:
 
 def debug_service_account_info(credentials_file: str):
     """Debug service account email and permissions"""
@@ -139,12 +154,13 @@ def get_mentor_config(mentor_email: str) -> dict:
         "email": mentor_email,
         "credentials_file": DEFAULT_MENTOR_CONFIG["credentials_file"],
         "meet_link": DEFAULT_MENTOR_CONFIG["meet_link"],
-        "calendar_id": DEFAULT_MENTOR_CONFIG["calendar_id"]
+        "calendar_id": mentor_email  # Use the mentor's email as calendar_id
     }
 
+@lru_cache(maxsize=10)
 def get_calendar_service(mentor_email: str = None):
     """
-    Get Google Calendar service for specific mentor.
+    Get Google Calendar service for specific mentor with caching.
     If mentor_email is provided, use their specific credentials.
     """
     mentor_config = get_mentor_config(mentor_email) if mentor_email else DEFAULT_MENTOR_CONFIG
@@ -166,6 +182,20 @@ def get_calendar_service(mentor_email: str = None):
     )
     service = build("calendar", "v3", credentials=credentials)
     return service, mentor_config
+
+def verify_calendar_access(mentor_email: str) -> bool:
+    """Verify that the service account has access to the mentor's calendar"""
+    try:
+        service, mentor_config = get_calendar_service(mentor_email)
+        calendar_id = mentor_config["calendar_id"]
+        
+        # Try to access the calendar
+        service.calendarList().get(calendarId=calendar_id).execute()
+        print(f"✅ Calendar access verified for {mentor_email}")
+        return True
+    except Exception as e:
+        print(f"❌ Calendar access verification failed for {mentor_email}: {e}")
+        return False
 
 def round_to_nearest_hour(dt_obj: datetime, round_up: bool = False) -> datetime:
     """
@@ -218,8 +248,6 @@ def get_user_last_session_date(user_email: str, mentor_email: str = None) -> Opt
                     orderBy="startTime",
                     q=user_email
                 ).execute().get("items", [])
-                print(f"[DEBUG] get_user_last_session_date(student={user_email}, mentor={mentor_email})")
-
                 
                 for event in events:
                     attendees = event.get('attendees', [])
@@ -308,16 +336,16 @@ def has_overlap(start_a: datetime, end_a: datetime, ranges: List[Tuple[datetime,
             return True
     return False
 
-def find_next_available_2hour_slot(mentor_email: str = None, after: datetime = None) -> Tuple[datetime, datetime]:
-    """Find next available 2-hour slot for specific mentor after given datetime."""
+def find_next_available_15min_slot(mentor_email: str = None, after: datetime = None) -> Tuple[datetime, datetime]:
+    """Find next available 15-minute slot for specific mentor after given datetime."""
     now = after or datetime.now(UK_TZ)
     
     # Scan today and next 3 days
     for day_offset in range(0, 4):
         scan_date = (now + timedelta(days=day_offset)).date()
         
-        # Skip if it's today but current time is past 3 PM (last slot start)
-        if day_offset == 0 and now.hour >= 15:
+        # Skip if it's today but current time is past 4:45 PM (last slot start)
+        if day_offset == 0 and now.hour >= 16 and now.minute >= 45:
             continue
             
         print(f"🔍 Scanning {scan_date} for {mentor_email or 'default'} available slots...")
@@ -327,7 +355,7 @@ def find_next_available_2hour_slot(mentor_email: str = None, after: datetime = N
         day_end = datetime.combine(scan_date, dt.time(17, 0), tzinfo=UK_TZ)
         busy_slots = get_busy_slots(day_start, day_end, mentor_email)
         
-        # Check each 2-hour slot
+        # Check each 15-minute slot
         for start_hour, start_min, end_hour, end_min in AVAILABLE_TIME_SLOTS:
             slot_start = datetime(
                 year=scan_date.year, 
@@ -360,7 +388,7 @@ def find_next_available_2hour_slot(mentor_email: str = None, after: datetime = N
     # Fallback - schedule for next week Monday 9 AM
     next_monday = now + timedelta(days=(7 - now.weekday()))
     fallback_start = datetime.combine(next_monday.date(), dt.time(9, 0), tzinfo=UK_TZ)
-    fallback_end = fallback_start + timedelta(hours=2)
+    fallback_end = fallback_start + timedelta(minutes=15)
     
     print(f"⚠️ No slots available this week for {mentor_email or 'default'}. Fallback: {fallback_start}")
     return fallback_start, fallback_end
@@ -372,9 +400,8 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5, mentor_em
     """
     # Use head mentor as default if not specified
     if not mentor_email:
-        mentor_email = "vardaan@ukjobsinsider.com"
+        mentor_email = "sunilramtri000@gmail.com"
     
-    # FIXED: Pass mentor_email to calculate earliest session
     earliest_allowed = calculate_earliest_next_session(user_email, mentor_email)
     slots = []
     
@@ -402,7 +429,7 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5, mentor_em
         
         # Track slots found for this day
         day_slots_found = 0
-        max_slots_per_day = 2
+        max_slots_per_day = 8  # Max 8 slots per day (2 hours)
         
         # Check each time slot for this day
         for start_hour, start_min, end_hour, end_min in AVAILABLE_TIME_SLOTS:
@@ -442,7 +469,7 @@ def get_next_available_slots_for_user(user_email: str, count: int = 5, mentor_em
                     "date_iso": slot_start.date().isoformat(),
                     "is_gap_compliant": slot_start >= earliest_allowed,
                     "day_name": slot_start.strftime('%A'),
-                    "full_datetime": slot_start.strftime('%A, %B %d, %Y at %I:%M %p UK_TZ')
+                    "full_datetime": slot_start.strftime('%A, %B %d, %Y at %I:%M %p UK time')
                 })
                 
                 day_slots_found += 1
@@ -496,16 +523,24 @@ def create_enhanced_event(
 ) -> dict:
     """Creates enhanced calendar event in specific mentor's calendar with their meet link"""
     
-    service, mentor_config = get_calendar_service(mentor_email)
-    calendar_id = mentor_config["calendar_id"]
-    meet_link = mentor_config["meet_link"]
-    
-    start_time_ist = _ensure_tz(start_time_ist).astimezone(UK_TZ)
-    end_time_ist = _ensure_tz(end_time_ist).astimezone(UK_TZ)
-    
-    # Enhanced description
-    duration_mins = int((end_time_ist - start_time_ist).total_seconds() / 60)
-    enhanced_description = f"""
+    try:
+        service, mentor_config = get_calendar_service(mentor_email)
+        calendar_id = mentor_config["calendar_id"]
+        meet_link = mentor_config["meet_link"]
+        
+        # Verify calendar access first
+        try:
+            service.calendarList().get(calendarId=calendar_id).execute()
+        except Exception as e:
+            print(f"⚠️ Cannot access calendar {calendar_id}: {e}")
+            return {"success": False, "error": f"Calendar access denied: {str(e)}"}
+        
+        start_time_ist = _ensure_tz(start_time_ist).astimezone(UK_TZ)
+        end_time_ist = _ensure_tz(end_time_ist).astimezone(UK_TZ)
+        
+        # Enhanced description
+        duration_mins = int((end_time_ist - start_time_ist).total_seconds() / 60)
+        enhanced_description = f"""
 📋 MENTORSHIP SESSION DETAILS
 
 👨‍🏫 Mentor: {mentor_name or mentor_config["name"]}
@@ -525,24 +560,23 @@ def create_enhanced_event(
 {description}
 """
 
-    event_body = {
-        "summary": summary,
-        "description": enhanced_description,
-        "start": {"dateTime": start_time_ist.isoformat(), "timeZone": "Europe/London"},  # FIXED: Changed from start_time_uk
-        "end": {"dateTime": end_time_ist.isoformat(), "timeZone": "Europe/London"},      # FIXED: Changed from end_time_uk
-        "location": f"Google Meet - {meet_link}",
-        "status": "confirmed",
-        "colorId": "2",
-        "reminders": {
-            "useDefault": False,
-            "overrides": [
-                {"method": "email", "minutes": 60},
-                {"method": "popup", "minutes": 15},
-            ]
+        event_body = {
+            "summary": summary,
+            "description": enhanced_description,
+            "start": {"dateTime": start_time_ist.isoformat(), "timeZone": "Europe/London"},
+            "end": {"dateTime": end_time_ist.isoformat(), "timeZone": "Europe/London"},
+            "location": f"Google Meet - {meet_link}",
+            "status": "confirmed",
+            "colorId": "2",
+            "reminders": {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "email", "minutes": 60},
+                    {"method": "popup", "minutes": 15},
+                ]
+            }
         }
-    }
 
-    try:
         created = service.events().insert(
             calendarId=calendar_id,
             body=event_body,
@@ -576,8 +610,8 @@ def schedule_specific_slot(student_email: str, mentor_email: str,
         
         # Verify the slot is still available in this mentor's calendar
         busy_slots = get_busy_slots(
-            slot_start - timedelta(hours=1),
-            slot_end + timedelta(hours=1),
+            slot_start - timedelta(minutes=15),
+            slot_end + timedelta(minutes=15),
             mentor_email
         )
         
@@ -592,7 +626,7 @@ def schedule_specific_slot(student_email: str, mentor_email: str,
         
         # Create calendar event in mentor's calendar
         summary = f"Mentorship Session: {student_name or 'Student'} & {mentor_name or mentor_config['name']}"
-        description = f"2-hour mentorship session between {student_name or 'student'} and {mentor_name or mentor_config['name']}"
+        description = f"15-minute mentorship session between {student_name or 'student'} and {mentor_name or mentor_config['name']}"
         
         event_result = create_enhanced_event(
             summary=summary,
@@ -608,7 +642,7 @@ def schedule_specific_slot(student_email: str, mentor_email: str,
         if event_result["success"]:
             return {
                 "success": True,
-                "message": f"✅ Session confirmed for {slot_start.strftime('%A, %B %d at %I:%M %p')} - {slot_end.strftime('%I:%M %p')} UK Tine",
+                "message": f"✅ Session confirmed for {slot_start.strftime('%A, %B %d at %I:%M %p')} - {slot_end.strftime('%I:%M %p')} UK time",
                 "start_time": slot_start,
                 "end_time": slot_end,
                 "meet_link": event_result["meet_link"],
@@ -637,6 +671,9 @@ def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
     Send email invitations with 'Add to Google Calendar' button.
     """
     from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    import smtplib
+    import ssl
 
     def generate_google_calendar_url(summary, start_time, end_time, description, location=None):
         start_str = start_time.strftime("%Y%m%dT%H%M%S")
@@ -651,6 +688,22 @@ def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
         )
         return url
 
+    # Validate and clean attendees list
+    cleaned_attendees = []
+    for email in attendees:
+        if email and isinstance(email, str):
+            email = email.strip()
+            if email and "@" in email and "." in email:
+                cleaned_attendees.append(email)
+            else:
+                print(f"⚠️ Skipping invalid email: {email}")
+        else:
+            print(f"⚠️ Skipping non-string email: {email}")
+    
+    if not cleaned_attendees:
+        print("❌ No valid email addresses to send to")
+        return False
+
     subject = f"📅 Mentorship Session Confirmation: {session_type}"
 
     # Prepare calendar URL
@@ -664,57 +717,138 @@ def send_enhanced_manual_invitations(attendees, meet_link, start_time, end_time,
 
     # Email HTML body
     body = f"""
-    Hello,<br><br>
-    Your mentorship session has been scheduled!<br><br>
+    <html>
+    <body>
+    <p>Hello,</p>
+    <p>Your mentorship session has been scheduled!</p>
+    
+    <p>
+    🧑‍🎓 <strong>Student:</strong> {student_name}<br>
+    🎓 <strong>Mentor:</strong> {mentor_name}<br>
+    🗓 <strong>Date:</strong> {start_time.strftime('%A, %d %B %Y')}<br>
+    ⏰ <strong>Time:</strong> {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} UK Time<br>
+    📍 <strong>Meet Link:</strong> <a href="{meet_link}">{meet_link}</a>
+    </p>
 
-    🧑‍🎓 Student: {student_name}<br>
-    🎓 Mentor: {mentor_name}<br>
-    🗓 Date: {start_time.strftime('%A, %d %B %Y')}<br>
-    ⏰ Time: {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} UK Time<br>
-    📍 Meet Link: <a href="{meet_link}">{meet_link}</a><br><br>
-
+    <p>
     <a href="{calendar_url}" 
        style="display:inline-block;padding:10px 20px;background-color:#1a73e8;color:white;text-decoration:none;border-radius:5px;">
     Add to Google Calendar
-    </a><br><br>
+    </a>
+    </p>
 
-    Thank you for booking!
+    <p>Thank you for booking!</p>
+    </body>
+    </html>
     """
 
-    # Send email
+    # Plain text version
+    text_body = f"""
+Hello,
+
+Your mentorship session has been scheduled!
+
+Student: {student_name}
+Mentor: {mentor_name}
+Date: {start_time.strftime('%A, %d %B %Y')}
+Time: {start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} UK Time
+Meet Link: {meet_link}
+
+Add to Calendar: {calendar_url}
+
+Thank you for booking!
+"""
+
+    # Send email using SMTP
     try:
+        # Create SMTP connection - FIXED: removed context parameter from starttls()
         server = smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT)
         server.ehlo()
-        context = ssl.create_default_context()
-        server.starttls(context=context)
+        server.starttls()  # No context parameter needed
+        server.ehlo()  # Re-identify after starttls
         server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
 
         sent_count = 0
-        for recipient in attendees:
-            msg = MIMEMultipart()
-            msg['From'] = settings.EMAIL_HOST_USER
-            msg['To'] = recipient
-            msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'html'))
+        failed_emails = []
+        
+        for recipient in cleaned_attendees:
+            try:
+                msg = MIMEMultipart('alternative')
+                msg['From'] = settings.EMAIL_HOST_USER
+                msg['To'] = recipient
+                msg['Subject'] = subject
+                
+                # Attach both plain text and HTML versions
+                part1 = MIMEText(text_body, 'plain')
+                part2 = MIMEText(body, 'html')
+                msg.attach(part1)
+                msg.attach(part2)
 
-            server.sendmail(settings.EMAIL_HOST_USER, recipient, msg.as_string())
-            sent_count += 1
+                server.send_message(msg)
+                sent_count += 1
+                print(f"✅ Email sent to: {recipient}")
+                
+            except Exception as e:
+                print(f"❌ Failed to send to {recipient}: {e}")
+                failed_emails.append(recipient)
 
         server.quit()
-        print(f"📧 Emails sent: {sent_count}/{len(attendees)}")
-        return sent_count == len(attendees)
+        
+        print(f"📧 Emails sent: {sent_count}/{len(cleaned_attendees)}")
+        if failed_emails:
+            print(f"⚠️ Failed recipients: {', '.join(failed_emails)}")
+        
+        return sent_count > 0  # Return True if at least one email was sent
 
     except Exception as e:
-        print(f"❌ Error sending email: {e}")
+        print(f"❌ SMTP Error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
-# Helper functions for specific day/calendar operations
+def send_via_fallback_smtp(subject, html_body, text_body, recipients, sender_email, sender_password):
+    """
+    Fallback method to send email using direct SMTP connection
+    """
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    import smtplib
+    import ssl
+    
+    try:
+        # Connect to Gmail's SMTP server using TLS
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()  # Remove the context parameter
+            server.login(sender_email, sender_password)
+            
+            for recipient in recipients:
+                # Create message
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = subject
+                msg['From'] = sender_email
+                msg['To'] = recipient
+                
+                # Attach text and HTML versions
+                part1 = MIMEText(text_body, 'plain')
+                part2 = MIMEText(html_body, 'html')
+                msg.attach(part1)
+                msg.attach(part2)
+                
+                # Send email
+                server.send_message(msg)
+                print(f"📧 Fallback email sent to {recipient}")
+                
+        return True
+        
+    except Exception as e:
+        print(f"❌ Fallback SMTP error: {e}")
+        return False
+    
 def get_available_days_for_user(user_email: str, mentor_email: str = None, max_days: int = 7) -> List[dict]:
     """Get list of days that have available slots for a user with specific mentor"""
     if not mentor_email:
-        mentor_email = "vardaan@ukjobsinsider.com"
+        mentor_email = "sunilramtri000@gmail.com"
         
-    # FIX 3: Pass mentor_email to calculate_earliest_next_session    
     earliest_allowed = calculate_earliest_next_session(user_email, mentor_email)
     available_days = []
     
@@ -728,7 +862,6 @@ def get_available_days_for_user(user_email: str, mentor_email: str = None, max_d
             days_checked += 1
             continue
         
-        # FIX 4: Pass mentor_email to the helper function
         day_slots = get_slots_for_specific_day_helper(user_email, check_date, mentor_email)
         if day_slots:
             available_days.append({
@@ -742,13 +875,11 @@ def get_available_days_for_user(user_email: str, mentor_email: str = None, max_d
     
     return available_days
 
-
 def get_slots_for_specific_day_helper(student_email: str, target_date, mentor_email: str):
-    # FIX 1: Pass mentor_email to calculate_earliest_next_session
     earliest_allowed = calculate_earliest_next_session(student_email, mentor_email)
 
     if not mentor_email:
-        mentor_email = "vardaan@ukjobsinsider.com"
+        mentor_email = "sunilramtri000@gmail.com"
         
     if isinstance(target_date, str):
         days_map = {
@@ -770,7 +901,6 @@ def get_slots_for_specific_day_helper(student_email: str, target_date, mentor_em
     
     print(f"🔍 Checking slots for {target_date} with mentor {mentor_email}")
     
-    # FIX 2: Use the correct mentor_email for busy slots check
     day_start = datetime.combine(target_date, dt.time(9, 0), tzinfo=UK_TZ)
     day_end = datetime.combine(target_date, dt.time(17, 0), tzinfo=UK_TZ)
     busy_slots = get_busy_slots(day_start, day_end, mentor_email)
@@ -794,12 +924,10 @@ def get_slots_for_specific_day_helper(student_email: str, target_date, mentor_em
                 "end_time": slot_end,
                 "formatted_date": slot_start.strftime('%A, %B %d'),
                 "formatted_time": f"{slot_start.strftime('%I:%M %p')} - {slot_end.strftime('%I:%M %p')} UK time",
-
             })
     
     return available_slots
 
-# Backward compatibility functions
 def get_google_calendar_service():
     """Alias for get_calendar_service() for backward compatibility"""
     return get_calendar_service()
@@ -828,11 +956,11 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
             slot_start = selected_slot["start_time"]
             slot_end = selected_slot["end_time"]
         else:
-            slot_start, slot_end = find_next_available_2hour_slot(mentor_email)
+            slot_start, slot_end = find_next_available_15min_slot(mentor_email)
 
         # Create calendar event using create_enhanced_event
         summary = f"Mentorship Session: {student_name} & {mentor_name}"
-        description = f"2-hour mentorship session between {student_name} and {mentor_name}"
+        description = f"15-minute mentorship session between {student_name} and {mentor_name}"
         
         event_result = create_enhanced_event(
             summary=summary,
@@ -857,7 +985,7 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
             end_time=slot_end,
             student_name=student_name,
             mentor_name=mentor_name,
-            session_type="1-on-1 Mentorship"
+            session_type="15-minute mentorship session"
         )
 
         return {
@@ -875,3 +1003,195 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+@transaction.atomic
+def book_time_slot(slot_id, user, mentor):
+    """
+    Book a time slot for a user with a mentor.
+    """
+    try:
+        print(f"🔧 Booking slot {slot_id} for user {user.user.username} with mentor {mentor.user.username}")
+        
+        # Get the time slot with row-level locking to prevent race conditions
+        slot = TimeSlot.objects.select_for_update().get(
+            id=slot_id, 
+            is_available=True, 
+            is_booked=False
+        )
+        
+        print(f"🔧 Found slot: {slot}")
+        
+        # Validate slot duration is 15 minutes
+        slot_duration = (datetime.combine(slot.date, slot.end_time) - 
+                         datetime.combine(slot.date, slot.start_time)).total_seconds() / 60
+        if slot_duration != 15:
+            raise ValidationError(f"Invalid slot duration: {slot_duration} minutes. Must be 15 minutes.")
+        
+        # Validate slot belongs to mentor
+        if slot.mentor != mentor:
+            raise ValidationError("Slot does not belong to specified mentor")
+        
+        # Get mentor configuration to get the meet link
+        mentor_config = get_mentor_config(mentor.user.email)
+        meet_link = mentor_config.get("meet_link", "https://meet.google.com/default")
+        
+        # FIXED: Properly collect attendee emails with debugging
+        student_email = user.user.email
+        mentor_email = mentor.user.email
+        
+        print(f"🔧 Debug - Student email: {student_email}")
+        print(f"🔧 Debug - Mentor email: {mentor_email}")
+        print(f"🔧 Debug - Mentor object: {mentor}")
+        print(f"🔧 Debug - Mentor user: {mentor.user}")
+        
+        # Validate emails before adding
+        attendees = []
+        if student_email and isinstance(student_email, str) and "@" in student_email:
+            attendees.append(student_email.strip())
+            print(f"✅ Added student email: {student_email}")
+        else:
+            print(f"❌ Invalid student email: {student_email}")
+            
+        if mentor_email and isinstance(mentor_email, str) and "@" in mentor_email:
+            attendees.append(mentor_email.strip())
+            print(f"✅ Added mentor email: {mentor_email}")
+        else:
+            print(f"❌ Invalid mentor email: {mentor_email}")
+            
+        print(f"🔧 Final Attendees list: {attendees}")
+        
+        # Create booking
+        booking = EnhancedSessionBooking.objects.create(
+            user=user.user,
+            mentor=mentor,
+            start_time=datetime.combine(slot.date, slot.start_time, tzinfo=UK_TZ),
+            end_time=datetime.combine(slot.date, slot.end_time, tzinfo=UK_TZ),
+            duration_minutes=15,
+            attendees=attendees,  # Save properly formatted attendees list
+            meet_link=meet_link
+        )
+        
+        print(f"🔧 Created booking: {booking}")
+
+        # Mark slot as booked and associate it with the booking
+        slot.is_booked = True
+        slot.booking = booking
+        slot.save()
+        print(f"🔧 Marked slot as booked")
+
+        # Send email invites to both student and mentor
+        print(f"🔧 Sending email invitations to: {attendees}")
+        email_sent = send_enhanced_manual_invitations(
+            attendees=attendees,  # Pass the validated attendees list
+            meet_link=meet_link,
+            start_time=booking.start_time,
+            end_time=booking.end_time,
+            student_name=user.user.username,
+            mentor_name=mentor.user.username,
+            session_type="15-minute mentorship session"
+        )
+        
+        if email_sent:
+            print("✅ Email invitations sent successfully")
+            booking.invitation_sent = True
+            booking.save()
+        else:
+            print("⚠️ Failed to send email invitations")
+            # We'll still continue with the booking even if emails fail
+        
+        # Increment user's session count
+        user.increment_session_count()
+        print(f"🔧 Incremented session count")
+        
+        return booking
+        
+    except TimeSlot.DoesNotExist:
+        raise ValidationError("Selected slot is not available or already booked")
+    except Exception as e:
+        print(f"❌ Error booking time slot: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+# In calendar_client.py
+
+def send_cancellation_notifications(attendees, student_name, mentor_name, formatted_time):
+    """
+    Send cancellation email notifications to attendees
+    Uses the same SMTP setup as send_enhanced_manual_invitations
+    """
+    try:
+        import smtplib
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from django.conf import settings
+        
+        print(f"📧 [CANCEL EMAIL] Sending to: {attendees}")
+        
+        # Connect to SMTP server (same as booking emails)
+        server = smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT)
+        server.starttls()
+        server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
+        
+        sent_count = 0
+        
+        for recipient in attendees:
+            try:
+                msg = MIMEMultipart('alternative')
+                msg['From'] = settings.EMAIL_HOST_USER
+                msg['To'] = recipient
+                msg['Subject'] = f"🚫 Session Cancelled - {student_name} & {mentor_name}"
+                
+                # Determine if recipient is student or mentor
+                is_student = recipient == attendees[0] if len(attendees) > 0 else True
+                recipient_name = student_name if is_student else mentor_name
+                other_person = mentor_name if is_student else student_name
+                
+                # Email body
+                text_body = f"""Hi {recipient_name},
+
+Your mentorship session on {formatted_time} with {other_person} has been cancelled.
+
+If you want to reschedule, please login to your account and book a new slot.
+
+Thanks,
+UK Jobs Mentorship Team"""
+                
+                html_body = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+                        <h2 style="color: #d9534f;">🚫 Session Cancelled</h2>
+                        <p>Hi {recipient_name},</p>
+                        <p>Your mentorship session on <strong>{formatted_time}</strong> with <strong>{other_person}</strong> has been cancelled.</p>
+                        <p>If you want to reschedule, please login to your account and book a new slot.</p>
+                        <hr style="border: 1px solid #eee; margin: 20px 0;">
+                        <p style="color: #666; font-size: 12px;">
+                            Thanks,<br>
+                            UK Jobs Mentorship Team
+                        </p>
+                    </div>
+                </body>
+                </html>
+                """
+                
+                msg.attach(MIMEText(text_body, 'plain'))
+                msg.attach(MIMEText(html_body, 'html'))
+                
+                server.send_message(msg)
+                print(f"✅ Cancellation email sent to: {recipient}")
+                sent_count += 1
+                
+            except Exception as recipient_error:
+                print(f"❌ Failed to send to {recipient}: {recipient_error}")
+        
+        server.quit()
+        print(f"📧 Cancellation emails sent: {sent_count}/{len(attendees)}")
+        
+        return sent_count > 0
+        
+    except Exception as e:
+        print(f"❌ [CANCEL EMAIL] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False

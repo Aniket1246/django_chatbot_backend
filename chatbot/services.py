@@ -4,7 +4,7 @@ import datetime
 from .models import Mentor
 from .calendar_client import (
     schedule_mentorship_session, 
-    find_next_available_2hour_slot,
+    find_next_available_15min_slot,  # Updated function name
     create_enhanced_event,
     send_enhanced_manual_invitations
 )
@@ -12,7 +12,7 @@ from .calendar_client import (
 def schedule_between_two_users(organizer_user, duration_minutes=120, fixed_mentor=None):
     """
     Updated service function to work with new scheduling system.
-    Maintains backward compatibility while using new 2-hour slot logic.
+    Maintains backward compatibility while using new 15-minute slot logic.
     """
     try:
         if not fixed_mentor:
@@ -69,5 +69,14 @@ def create_event(*args, **kwargs):
     return create_enhanced_event(*args, **kwargs)
 
 def find_next_available_slot(duration_minutes=120):
-    """Backward compatibility wrapper"""
-    return find_next_available_2hour_slot()
+    """
+    Backward compatibility wrapper that returns multiple 15-minute slots to make up the requested duration
+    """
+    # Get the first available 15-minute slot
+    first_slot_start, first_slot_end = find_next_available_15min_slot()
+    
+    # Calculate how many 15-minute slots we need
+    slots_needed = max(1, duration_minutes // 15)
+    
+    # Return the first slot as the starting point
+    return first_slot_start, first_slot_end

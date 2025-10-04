@@ -25,7 +25,7 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-g)our@8p30du#16exo7
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
-ALLOWED_HOSTS = ["13.60.12.71", "ukjobsinsider.com", "www.ukjobsinsider.com","127.0.0.1", "localhost","33536843e95d.ngrok-free.app", "3956adfbbbcc.ngrok-free.app", "a5e9904923bb.ngrok-free.app","51.21.122.77","7214fdd8b87a.ngrok-free.app"]
+ALLOWED_HOSTS = ["13.60.12.71","chatbot.ukjobsinsider.com","ukjobsinsider.com", "www.ukjobsinsider.com","127.0.0.1", "localhost","33536843e95d.ngrok-free.app", "3956adfbbbcc.ngrok-free.app", "a5e9904923bb.ngrok-free.app","51.21.122.77","6e78bcd5d7d9.ngrok-free.app","2b62175277b2.ngrok-free.app"]
 
 
 # Email Configuration (use environment variables in production)
@@ -36,7 +36,8 @@ EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False 
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "vardaan@ukjobsinsider.com")
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', "qrok nawh nkrr fakn")
-
+EMAIL_SSL_CERTFILE = None
+EMAIL_SSL_KEYFILE = None
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -85,9 +86,9 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",   # Vite React dev server
     "http://127.0.0.1:5173",
-    "https://a5e9904923bb.ngrok-free.app",
+    "https://2b62175277b2.ngrok-free.app",
     "http://localhost:5174", 
-    "https://3956adfbbbcc.ngrok-free.app",  # Vite React dev server
+    "https://2b62175277b2.ngrok-free.app",  # Vite React dev server
 
 ]
 
@@ -152,13 +153,17 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+'OPTIONS': {
+            'timeout': 30,  # Increase to 30s
+ # Autocommit mode for better concurrency
+        },
     }
 }
 # DATABASES = {
 #     'default': {
 #         'ENGINE': 'djongo',
 #         'NAME': 'ukjobsinsider',
-#         'CLIENT': {
+#         'CLIENT': {   
 #             'host': 'mongodb+srv://d2023amitramtri_db_user:0aGLD4KQoCwBmrwI@ukjobsinsider.mzj7olb.mongodb.net/ukjobsinsider?retryWrites=true&w=majority',
 #             'connect': False,
 #         }
@@ -219,4 +224,22 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # Token Configuration
-TOKEN_EXPIRY_TIME = 86400  # 24 hours in seconds
+TOKEN_EXPIRY_TIME = 86400
+
+# --- SQLite concurrency tuning (launch safe) ---
+if DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
+    import sqlite3
+    from django.db import connection
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('PRAGMA journal_mode=WAL;')   # allows concurrent reads
+            cursor.execute('PRAGMA synchronous=NORMAL;')  # improves performance
+        print("✅ SQLite WAL mode enabled for better concurrency")
+    except sqlite3.OperationalError:
+        print("⚠️ Could not enable WAL mode — continuing in default mode")
+
+    DATABASES['default']['OPTIONS'] = {
+        'timeout': 30,  # wait up to 30s before throwing "database is locked"
+    }
+  # 24 hours in seconds

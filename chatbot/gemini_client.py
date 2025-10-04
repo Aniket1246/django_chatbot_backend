@@ -16,7 +16,7 @@ else:
     print("ERROR: GEMINI_API_KEY not found in environment or settings!")
 
 # --- Load PDF instructions once ---
-PDF_PATH = os.path.join(os.path.dirname(__file__), "..", "ukjobs10.pdf")  # Better path handling
+PDF_PATH = os.path.join(os.path.dirname(__file__), "..", "ukjobs9.pdf")  # Better path handling
 
 def load_pdf_text(pdf_path):
     try:

@@ -10,6 +10,9 @@ env/
 .venv/
 venv*/
 venv310/
+credentials_kapil.json
+credsam.json
+credentials_meena.json  
 
 # ---- Python Bytecode ----
 __pycache__/
