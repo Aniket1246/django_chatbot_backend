@@ -1004,114 +1004,218 @@ def schedule_mentorship_session(student_email, mentor_email, student_name, mento
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-@transaction.atomic
+MAX_RETRIES = 5
+import time
+from django.db import transaction, OperationalError
 def book_time_slot(slot_id, user, mentor):
     """
-    Book a time slot for a user with a mentor.
+    Book a time slot — retry-safe, emails sent after commit.
+    """
+    for attempt in range(MAX_RETRIES):
+        try:
+            with transaction.atomic():
+                print(f"🔧 Booking attempt {attempt+1} for slot {slot_id}")
+
+                slot = TimeSlot.objects.select_for_update().get(
+                    id=slot_id,
+                    is_available=True,
+                    is_booked=False
+                )
+
+                if slot.mentor != mentor:
+                    raise ValidationError("Slot does not belong to this mentor.")
+
+                slot_duration = (
+                    datetime.combine(slot.date, slot.end_time) -
+                    datetime.combine(slot.date, slot.start_time)
+                ).total_seconds() / 60
+                if slot_duration != 15:
+                    raise ValidationError("Slot duration must be 15 minutes.")
+
+                # Create booking
+                booking = EnhancedSessionBooking.objects.create(
+                    user=user.user,
+                    mentor=mentor,
+                    start_time=datetime.combine(slot.date, slot.start_time, tzinfo=UK_TZ),
+                    end_time=datetime.combine(slot.date, slot.end_time, tzinfo=UK_TZ),
+                    duration_minutes=15,
+                    meet_link=get_mentor_config(mentor.user.email).get("meet_link", "https://meet.google.com/default"),
+                    attendees=[user.user.email, mentor.user.email],
+                )
+
+                # Mark slot as booked
+                slot.is_booked = True
+                slot.is_available = False
+                slot.booking = booking
+                slot.save()
+
+                # ✅ Schedule emails AFTER commit
+                transaction.on_commit(lambda: send_booking_emails(booking, user, mentor))
+
+                print("✅ Slot booked successfully (DB transaction complete).")
+                return booking
+
+        except TimeSlot.DoesNotExist:
+            raise ValidationError("This slot is already booked.")
+        except OperationalError as e:
+            if "database is locked" in str(e).lower():
+                print(f"⚠️ SQLite locked, retrying ({attempt+1}/{MAX_RETRIES})...")
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            else:
+                raise
+        except Exception as e:
+            print(f"❌ Booking error: {e}")
+            raise
+
+    raise ValidationError("System busy. Please try again in a few seconds.")
+
+from django.core.mail import EmailMultiAlternatives
+from django.conf import settings
+
+def send_booking_emails(booking, user_profile, mentor):
+    """
+    Send confirmation emails to student and mentor after booking.
+    Runs after transaction commit to avoid DB locks.
+    Python 3.11+ compatible - no keyfile parameter.
     """
     try:
-        print(f"🔧 Booking slot {slot_id} for user {user.user.username} with mentor {mentor.user.username}")
+        import smtplib
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from django.conf import settings
         
-        # Get the time slot with row-level locking to prevent race conditions
-        slot = TimeSlot.objects.select_for_update().get(
-            id=slot_id, 
-            is_available=True, 
-            is_booked=False
-        )
-        
-        print(f"🔧 Found slot: {slot}")
-        
-        # Validate slot duration is 15 minutes
-        slot_duration = (datetime.combine(slot.date, slot.end_time) - 
-                         datetime.combine(slot.date, slot.start_time)).total_seconds() / 60
-        if slot_duration != 15:
-            raise ValidationError(f"Invalid slot duration: {slot_duration} minutes. Must be 15 minutes.")
-        
-        # Validate slot belongs to mentor
-        if slot.mentor != mentor:
-            raise ValidationError("Slot does not belong to specified mentor")
-        
-        # Get mentor configuration to get the meet link
-        mentor_config = get_mentor_config(mentor.user.email)
-        meet_link = mentor_config.get("meet_link", "https://meet.google.com/default")
-        
-        # FIXED: Properly collect attendee emails with debugging
-        student_email = user.user.email
-        mentor_email = mentor.user.email
-        
-        print(f"🔧 Debug - Student email: {student_email}")
-        print(f"🔧 Debug - Mentor email: {mentor_email}")
-        print(f"🔧 Debug - Mentor object: {mentor}")
-        print(f"🔧 Debug - Mentor user: {mentor.user}")
-        
-        # Validate emails before adding
-        attendees = []
-        if student_email and isinstance(student_email, str) and "@" in student_email:
-            attendees.append(student_email.strip())
-            print(f"✅ Added student email: {student_email}")
-        else:
-            print(f"❌ Invalid student email: {student_email}")
-            
-        if mentor_email and isinstance(mentor_email, str) and "@" in mentor_email:
-            attendees.append(mentor_email.strip())
-            print(f"✅ Added mentor email: {mentor_email}")
-        else:
-            print(f"❌ Invalid mentor email: {mentor_email}")
-            
-        print(f"🔧 Final Attendees list: {attendees}")
-        
-        # Create booking
-        booking = EnhancedSessionBooking.objects.create(
-            user=user.user,
-            mentor=mentor,
-            start_time=datetime.combine(slot.date, slot.start_time, tzinfo=UK_TZ),
-            end_time=datetime.combine(slot.date, slot.end_time, tzinfo=UK_TZ),
-            duration_minutes=15,
-            attendees=attendees,  # Save properly formatted attendees list
-            meet_link=meet_link
-        )
-        
-        print(f"🔧 Created booking: {booking}")
+        attendees = [user_profile.user.email, mentor.user.email]
+        meet_link = booking.meet_link
+        subject = f"Session Confirmed with {mentor.get_display_name()}"
+        from_email = settings.EMAIL_HOST_USER
 
-        # Mark slot as booked and associate it with the booking
-        slot.is_booked = True
-        slot.booking = booking
-        slot.save()
-        print(f"🔧 Marked slot as booked")
-
-        # Send email invites to both student and mentor
-        print(f"🔧 Sending email invitations to: {attendees}")
-        email_sent = send_enhanced_manual_invitations(
-            attendees=attendees,  # Pass the validated attendees list
-            meet_link=meet_link,
-            start_time=booking.start_time,
-            end_time=booking.end_time,
-            student_name=user.user.username,
-            mentor_name=mentor.user.username,
-            session_type="15-minute mentorship session"
+        text_body = (
+            f"Hi {user_profile.user.first_name or user_profile.user.username},\n\n"
+            f"Your session with {mentor.get_display_name()} is confirmed.\n\n"
+            f"Date: {booking.start_time.strftime('%A, %B %d, %Y')}\n"
+            f"Time: {booking.start_time.strftime('%I:%M %p')} UK Time\n"
+            f"Meet Link: {meet_link}\n\n"
+            f"Best,\nTeam"
         )
-        
-        if email_sent:
-            print("✅ Email invitations sent successfully")
-            booking.invitation_sent = True
-            booking.save()
-        else:
-            print("⚠️ Failed to send email invitations")
-            # We'll still continue with the booking even if emails fail
-        
-        # Increment user's session count
-        user.increment_session_count()
-        print(f"🔧 Incremented session count")
-        
-        return booking
-        
-    except TimeSlot.DoesNotExist:
-        raise ValidationError("Selected slot is not available or already booked")
+
+        html_body = f"""
+        <html>
+        <body>
+            <p>Hi {user_profile.user.first_name or user_profile.user.username},</p>
+            <p>Your session with <b>{mentor.get_display_name()}</b> is confirmed.</p>
+            <p>
+                <b>Date:</b> {booking.start_time.strftime('%A, %B %d, %Y')}<br>
+                <b>Time:</b> {booking.start_time.strftime('%I:%M %p')} UK Time<br>
+                <b>Meet Link:</b> <a href="{meet_link}">{meet_link}</a>
+            </p>
+            <p>Best,<br>Team</p>
+        </body>
+        </html>
+        """
+
+        # Create SMTP connection - Python 3.11+ compatible
+        server = smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT)
+        server.ehlo()
+        server.starttls()  # No parameters needed
+        server.ehlo()  # Re-identify after starttls
+        server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
+
+        sent_count = 0
+        for recipient in attendees:
+            try:
+                msg = MIMEMultipart('alternative')
+                msg['From'] = from_email
+                msg['To'] = recipient
+                msg['Subject'] = subject
+                
+                msg.attach(MIMEText(text_body, 'plain'))
+                msg.attach(MIMEText(html_body, 'html'))
+                
+                server.send_message(msg)
+                sent_count += 1
+                print(f"✅ Email sent to: {recipient}")
+                
+            except Exception as e:
+                print(f"❌ Failed to send to {recipient}: {e}")
+
+        server.quit()
+        print(f"📧 Emails sent: {sent_count}/{len(attendees)}")
+        return sent_count > 0
+
     except Exception as e:
-        print(f"❌ Error booking time slot: {e}")
+        print(f"❌ Failed to send booking emails: {e}")
         import traceback
         traceback.print_exc()
-        raise
+        return False
+
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from django.conf import settings
+
+def send_booking_emails_smtp(booking, user_profile, mentor):
+    """
+    Send confirmation emails to student and mentor using smtplib.
+    Fully compatible with Python 3.11+ (no keyfile error).
+    """
+    try:
+        attendees = [user_profile.user.email, mentor.user.email]
+        meet_link = booking.meet_link
+
+        subject = f"Session Confirmed with {mentor.get_display_name()}"
+        from_email = settings.EMAIL_HOST_USER
+
+        # Plain text body
+        text_body = (
+            f"Hi {user_profile.user.first_name or user_profile.user.username},\n\n"
+            f"Your session with {mentor.get_display_name()} is confirmed.\n\n"
+            f"Date: {booking.start_time.strftime('%A, %B %d, %Y')}\n"
+            f"Time: {booking.start_time.strftime('%I:%M %p')} UK Time\n"
+            f"Meet Link: {meet_link}\n\n"
+            f"Best,\nTeam"
+        )
+
+        # HTML body
+        html_body = f"""
+        <html>
+        <body>
+        <p>Hi {user_profile.user.first_name or user_profile.user.username},</p>
+        <p>Your session with <b>{mentor.get_display_name()}</b> is confirmed.</p>
+        <p>
+            <b>Date:</b> {booking.start_time.strftime('%A, %B %d, %Y')}<br>
+            <b>Time:</b> {booking.start_time.strftime('%I:%M %p')} UK Time<br>
+            <b>Meet Link:</b> <a href="{meet_link}">{meet_link}</a>
+        </p>
+        <p>Best,<br>Team</p>
+        </body>
+        </html>
+        """
+
+        # Create email message
+        msg = MIMEMultipart('alternative')
+        msg['From'] = from_email
+        msg['To'] = ", ".join(attendees)
+        msg['Subject'] = subject
+        msg.attach(MIMEText(text_body, 'plain'))
+        msg.attach(MIMEText(html_body, 'html'))
+
+        # Setup SMTP with TLS context (Python 3.11+ safe)
+        context = ssl.create_default_context()
+        with smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT) as server:
+            server.starttls(context=context)  # ✅ TLS without keyfile
+            server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
+            server.send_message(msg)
+
+        print(f"✅ Emails sent to: {attendees}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Failed to send booking emails: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 # In calendar_client.py
 
