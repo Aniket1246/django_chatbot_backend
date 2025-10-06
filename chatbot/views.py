@@ -362,20 +362,20 @@ def to_aware_datetime(dt_str_or_dt):
         dt = timezone.make_aware(dt, UK_TZ)
     return dt
 
-@method_decorator(csrf_exempt, name="dispatch")  
+@method_decorator(csrf_exempt, name="dispatch")
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def post(self, request):
         try:
-            request.user.auth_token.delete()
-            return Response({
-                "message": "Logged out successfully"
-            }, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({
-                "error": "Logout failed"
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            token = getattr(request.user, "auth_token", None)
+            if token:
+                token.delete()
+            return Response({"message": "Logged out successfully"}, status=status.HTTP_200_OK)
+        except Exception:
+            # Even if token is missing or invalid
+            return Response({"message": "Logout safe"}, status=status.HTTP_200_OK)
+
 
 @method_decorator(csrf_exempt, name="dispatch")
 class TestView(APIView):
@@ -2291,12 +2291,35 @@ class AvailableSlotsView(APIView):
             return Response({
                 "error": "Could not fetch available slots"
             }, status=500)
+import re
+def clean_chat_output(text: str) -> str:
+    """
+    Sanitize AI reply:
+    - Remove <u> tags
+    - Allow <a href=""> tags (for blue clickable links)
+    - Remove any other unwanted HTML tags
+    """
+    if not text:
+        return text
+
+    # Remove underline tags
+    text = re.sub(r"</?u>", "", text, flags=re.IGNORECASE)
+
+    # Keep only <a> tags and their href attribute, remove all others
+    text = re.sub(r"<(?!/?a(?=>|\s.*>))[^>]+>", "", text)
+
+    # Ensure anchor tags have inline style for blue color (so link looks professional)
+    text = re.sub(
+        r'<a\s+([^>]*?)href="([^"]+)"([^>]*)>',
+        r'<a href="\2" style="color:#1a73e8; text-decoration:none;" target="_blank">',
+        text
+    )
+
+    return text.strip()
 
 class ChatView(APIView):
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
-
-    # In ChatView.post() method, update the first-time user handling:
 
     def post(self, request):
         try:
@@ -2308,11 +2331,11 @@ class ChatView(APIView):
             profile = UserProfile.objects.filter(user=request.user).first()
             is_premium = profile.is_premium if profile else False
 
-            # PRIORITY 1: Check for cancellation requests FIRST
+            # PRIORITY 1: Check for cancellation requests FIRST (before booking check)
             if is_cancel_request(message):
                 if not is_premium:
                     return Response({
-                        "reply": "⚠️ Only Plus users can manage sessions. Please upgrade to premium.",
+                        "reply": "⚠️ Only Plus users can manage sessions. Please upgrade to Plus.",
                         "mentors": None
                     }, status=200)
                 
@@ -2361,7 +2384,7 @@ class ChatView(APIView):
 
                 return Response({
                     "reply": f"📅 I found your active session with {mentor_name} scheduled for {session_time_ist}.\n\nAre you sure you want to cancel this session?",
-                    "session_actions": True,  # This will trigger the cancel/reschedule UI
+                    "session_actions": True,
                     "session_details": {
                         "mentor_name": mentor_name,
                         "session_time": session_time_ist,
@@ -2369,7 +2392,7 @@ class ChatView(APIView):
                     }
                 }, status=200)
 
-            # PRIORITY 2: Check for meeting/booking requests  
+            # PRIORITY 2: Check for meeting/booking requests (MUST COME BEFORE AI CHAT)
             if is_meeting_request(message):
                 if not is_premium:
                     return Response({
@@ -2380,136 +2403,82 @@ class ChatView(APIView):
                 # Detect domain from message
                 detected_domain = detect_domain_from_message(message)
                 
-                if is_first_time_user(request.user):
-                    # First time user - show head mentor only
-                    # Get head mentor configuration with error handling
-                    head_config = None
+                # ALL USERS get regular mentor selection (head mentor logic commented out)
+                
+                # If domain detected, auto-select mentor
+                if detected_domain != 'general':
+                    selected_mentor = get_random_mentor_by_domain(detected_domain)
+                    
+                    if selected_mentor:
+                        return Response({
+                            "reply": f"I detected you're interested in {detected_domain.title()} domain. I've selected {selected_mentor.user.username} as your mentor specialist for this area.",
+                            "mentors": [{
+                                "id": selected_mentor.id,
+                                "username": selected_mentor.user.username,
+                                "email": selected_mentor.user.email,
+                                "expertise": selected_mentor.expertise
+                            }],
+                            "is_first_time": False,
+                            "detected_domain": detected_domain,
+                            "auto_selected": True,
+                            "auto_mentor_id": selected_mentor.id
+                        }, status=200)
+                
+                # Fallback: show all mentors except head mentor for ALL users
+                try:
+                    # Get head mentor to exclude from list
+                    head_mentor = None
                     try:
                         head_config = MENTOR_CONFIG.get("head")
-                        if not head_config or not head_config.get("email"):
-                            print("⚠️ Head mentor configuration not found or incomplete")
-                            head_config = None
+                        if head_config and head_config.get("email"):
+                            head_email = head_config["email"]
+                            try:
+                                head_mentor = Mentor.objects.get(user__email=head_email, is_active=True)
+                            except Mentor.DoesNotExist:
+                                pass  # Head mentor not found, continue with all mentors
                     except Exception as e:
                         print(f"❌ Error accessing head mentor configuration: {e}")
-                        head_config = None
                     
-                    # Try to get head mentor if config exists
-                    head_mentor_obj = None
-                    head_name = "Head Mentor"
-                    if head_config:
-                        head_email = head_config["email"]
-                        head_name = head_config.get("name", "Head Mentor")
-                        
-                        try:
-                            head_mentor_obj = Mentor.objects.get(user__email=head_email, is_active=True)
-                        except Mentor.DoesNotExist:
-                            print(f"⚠️ Head mentor with email {head_email} not found or not active")
+                    # Get all active mentors except head mentor
+                    if head_mentor:
+                        mentors = Mentor.objects.filter(is_active=True).exclude(id=head_mentor.id).select_related("user")
+                    else:
+                        mentors = Mentor.objects.filter(is_active=True).select_related("user")
                     
-                    # If head mentor not found, fall back to any active mentor
-                    if not head_mentor_obj:
-                        try:
-                            head_mentor_obj = Mentor.objects.filter(is_active=True).first()
-                            if not head_mentor_obj:
-                                return Response({
-                                    "reply": "⚠️ No mentors available at the moment. Please try again later.",
-                                    "mentors": None
-                                }, status=200)
-                            head_name = head_mentor_obj.user.username
-                            print(f"🎯 [FALLBACK] Using fallback mentor: {head_mentor_obj.user.email}")
-                        except Exception as e:
-                            print(f"❌ Error finding fallback mentor: {e}")
-                            return Response({
-                                "reply": "⚠️ No mentors available at the moment. Please try again later.",
-                                "mentors": None
-                            }, status=200)
+                    mentor_list = [
+                        {
+                            "id": m.id,
+                            "username": m.user.username,
+                            "email": m.user.email,
+                            "expertise": m.expertise
+                        }
+                        for m in mentors
+                    ]
                     
-                    head_mentor = {
-                        "id": "head",
-                        "username": head_name,
-                        "email": head_mentor_obj.user.email,
-                        "expertise": "One on One Mentorship"
-                    }
-                    
-                    return Response({
-                        "reply": "🎯 Welcome! As a first-time premium user, your initial session will be with our Head Mentor for assessment and guidance. Please select to continue:",
-                        "mentors": [head_mentor],
-                        "is_first_time": True,
-                        "detected_domain": detected_domain
-                    }, status=200)
-                
-                else:
-                    # If domain detected, auto-select mentor
-                    if detected_domain != 'general':
-                        selected_mentor = get_random_mentor_by_domain(detected_domain)
-                        
-                        if selected_mentor:
-                            return Response({
-                                "reply": f"🎯 I detected you're interested in {detected_domain.title()} domain. I've selected {selected_mentor.user.username} as your mentor specialist for this area.",
-                                "mentors": [{
-                                    "id": selected_mentor.id,
-                                    "username": selected_mentor.user.username,
-                                    "email": selected_mentor.user.email,
-                                    "expertise": selected_mentor.expertise
-                                }],
-                                "is_first_time": False,
-                                "detected_domain": detected_domain,
-                                "auto_selected": True,
-                                "auto_mentor_id": selected_mentor.id
-                            }, status=200)
-                    
-                    # Fallback: show all mentors except head mentor for returning users
-                    try:
-                        # Get head mentor to exclude from list
-                        head_mentor = None
-                        try:
-                            head_config = MENTOR_CONFIG.get("head")
-                            if head_config and head_config.get("email"):
-                                head_email = head_config["email"]
-                                try:
-                                    head_mentor = Mentor.objects.get(user__email=head_email, is_active=True)
-                                except Mentor.DoesNotExist:
-                                    pass  # Head mentor not found, continue with all mentors
-                        except Exception as e:
-                            print(f"❌ Error accessing head mentor configuration: {e}")
-                        
-                        # Get all active mentors except head mentor
-                        if head_mentor:
-                            mentors = Mentor.objects.filter(is_active=True).exclude(id=head_mentor.id).select_related("user")
-                        else:
-                            mentors = Mentor.objects.filter(is_active=True).select_related("user")
-                        
-                        mentor_list = [
-                            {
-                                "id": m.id,
-                                "username": m.user.username,
-                                "email": m.user.email,
-                                "expertise": m.expertise
-                            }
-                            for m in mentors
-                        ]
-                        
-                        if not mentor_list:
-                            return Response({
-                                "reply": "⚠️ No mentors available at the moment. Please try again later.",
-                                "mentors": None
-                            }, status=200)
-                        
-                        return Response({
-                            "reply": "📅 I can help you schedule a mentorship session. Please select a mentor:",
-                            "mentors": mentor_list,
-                            "is_first_time": False,
-                            "detected_domain": detected_domain
-                        }, status=200)
-                        
-                    except Exception as e:
-                        print(f"❌ Error getting mentors: {e}")
+                    if not mentor_list:
                         return Response({
                             "reply": "⚠️ No mentors available at the moment. Please try again later.",
                             "mentors": None
                         }, status=200)
+                    
+                    return Response({
+                        "reply": "I can help you schedule a mentorship session. Please select a mentor:",
+                        "mentors": mentor_list,
+                        "is_first_time": False,
+                        "detected_domain": detected_domain
+                    }, status=200)
+                    
+                except Exception as e:
+                    print(f"❌ Error getting mentors: {e}")
+                    return Response({
+                        "reply": "⚠️ No mentors available at the moment. Please try again later.",
+                        "mentors": None
+                    }, status=200)
 
-            # PRIORITY 3: Default AI chat for other messages
+            # PRIORITY 3: Default AI chat for other messages (only reached if not booking/cancel)
             reply = ask_gemini(message, is_premium)
+            reply = clean_chat_output(reply)
+
             return Response({"reply": reply}, status=200)
 
         except Exception as e:

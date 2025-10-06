@@ -1072,58 +1072,219 @@ def book_time_slot(slot_id, user, mentor):
 
 from django.core.mail import EmailMultiAlternatives
 from django.conf import settings
-
+def generate_google_calendar_url(summary, start_time, end_time, description, location=None):
+        start_str = start_time.strftime("%Y%m%dT%H%M%S")
+        end_str = end_time.strftime("%Y%m%dT%H%M%S")
+        url = (
+            "https://www.google.com/calendar/render?action=TEMPLATE"
+            f"&text={quote(summary)}"
+            f"&dates={start_str}/{end_str}"
+            f"&details={quote(description)}"
+            f"&location={quote(location or '')}"
+            "&sf=true&output=xml"
+        )
+        return url
 def send_booking_emails(booking, user_profile, mentor):
     """
-    Send confirmation emails to student and mentor after booking.
-    Runs after transaction commit to avoid DB locks.
-    Python 3.11+ compatible - no keyfile parameter.
+    Send personalized confirmation emails to both student and mentor
+    with attendee information and Add to Calendar button
     """
     try:
-        import smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-        from django.conf import settings
-        
-        attendees = [user_profile.user.email, mentor.user.email]
+        # Extract basic info
+        student_email = user_profile.user.email
+        mentor_email = mentor.user.email
+        student_name = user_profile.user.first_name or user_profile.user.username
+        mentor_name = mentor.get_display_name()
         meet_link = booking.meet_link
-        subject = f"Session Confirmed with {mentor.get_display_name()}"
-        from_email = settings.EMAIL_HOST_USER
-
-        text_body = (
-            f"Hi {user_profile.user.first_name or user_profile.user.username},\n\n"
-            f"Your session with {mentor.get_display_name()} is confirmed.\n\n"
-            f"Date: {booking.start_time.strftime('%A, %B %d, %Y')}\n"
-            f"Time: {booking.start_time.strftime('%I:%M %p')} UK Time\n"
-            f"Meet Link: {meet_link}\n\n"
-            f"Best,\nTeam"
+        
+        # Generate calendar URL
+        calendar_url = generate_google_calendar_url(
+            summary=f"Mentorship Session: {student_name} & {mentor_name}",
+            start_time=booking.start_time,
+            end_time=booking.end_time,
+            description=f"15-minute mentorship session. Join via Google Meet: {meet_link}",
+            location=meet_link
         )
-
-        html_body = f"""
-        <html>
-        <body>
-            <p>Hi {user_profile.user.first_name or user_profile.user.username},</p>
-            <p>Your session with <b>{mentor.get_display_name()}</b> is confirmed.</p>
-            <p>
-                <b>Date:</b> {booking.start_time.strftime('%A, %B %d, %Y')}<br>
-                <b>Time:</b> {booking.start_time.strftime('%I:%M %p')} UK Time<br>
-                <b>Meet Link:</b> <a href="{meet_link}">{meet_link}</a>
-            </p>
-            <p>Best,<br>Team</p>
-        </body>
-        </html>
-        """
-
-        # Create SMTP connection - Python 3.11+ compatible
+        
+        from_email = settings.EMAIL_HOST_USER
+        attendees = [student_email, mentor_email]
+        
+        # Connect to SMTP
         server = smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT)
         server.ehlo()
-        server.starttls()  # No parameters needed
-        server.ehlo()  # Re-identify after starttls
+        server.starttls()
+        server.ehlo()
         server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
 
         sent_count = 0
+        
+        # Send personalized email to each recipient
         for recipient in attendees:
             try:
+                # Determine if recipient is student or mentor
+                is_student = (recipient == student_email)
+                
+                if is_student:
+                    subject = f"Session Confirmed with {mentor_name}"
+                    recipient_name = student_name
+                    other_person_name = mentor_name
+                    other_person_email = mentor_email
+                    other_person_role = "Mentor"
+                else:
+                    subject = f"New Session Booked with {student_name}"
+                    recipient_name = mentor_name
+                    other_person_name = student_name
+                    other_person_email = student_email
+                    other_person_role = "Student"
+                
+                # Plain text version
+                text_body = (
+                    f"Hi {recipient_name},\n\n"
+                    f"Your mentorship session has been confirmed!\n\n"
+                    f"Session Details:\n"
+                    f"- Date: {booking.start_time.strftime('%A, %B %d, %Y')}\n"
+                    f"- Time: {booking.start_time.strftime('%I:%M %p')} UK Time\n"
+                    f"- Duration: 15 minutes\n\n"
+                    f"Attendee Information:\n"
+                    f"- {other_person_role}: {other_person_name}\n"
+                    f"- Email: {other_person_email}\n\n"
+                    f"Meet Link: {meet_link}\n\n"
+                    f"Add to Calendar: {calendar_url}\n\n"
+                    f"Best regards,\nUK Jobs Mentorship Team"
+                )
+
+                # Enhanced HTML version
+                html_body = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+        <!-- Header -->
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px 20px; text-align: center;">
+            <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 600;">
+                Session Confirmed!
+            </h1>
+        </div>
+        
+        <!-- Content -->
+        <div style="padding: 40px 30px; background-color: #f8f9fa;">
+            <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                Hi <strong>{recipient_name}</strong>,
+            </p>
+            
+            <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 30px 0;">
+                Your mentorship session has been successfully scheduled!
+            </p>
+            
+            <!-- Session Details Card -->
+            <div style="background-color: #ffffff; border-radius: 12px; padding: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 25px;">
+                <h2 style="color: #667eea; font-size: 20px; margin: 0 0 20px 0; font-weight: 600;">
+                    Session Details
+                </h2>
+                
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                            <span style="color: #6c757d; font-size: 14px;">Student</span>
+                        </td>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef; text-align: right;">
+                            <span style="color: #333333; font-size: 15px; font-weight: 500;">{student_name}</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                            <span style="color: #6c757d; font-size: 14px;">Mentor</span>
+                        </td>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef; text-align: right;">
+                            <span style="color: #333333; font-size: 15px; font-weight: 500;">{mentor_name}</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                            <span style="color: #6c757d; font-size: 14px;">Date</span>
+                        </td>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef; text-align: right;">
+                            <span style="color: #333333; font-size: 15px; font-weight: 500;">{booking.start_time.strftime('%A, %B %d, %Y')}</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef;">
+                            <span style="color: #6c757d; font-size: 14px;">Time</span>
+                        </td>
+                        <td style="padding: 12px 0; border-bottom: 1px solid #e9ecef; text-align: right;">
+                            <span style="color: #333333; font-size: 15px; font-weight: 500;">{booking.start_time.strftime('%I:%M %p')} UK Time</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px 0;">
+                            <span style="color: #6c757d; font-size: 14px;">Duration</span>
+                        </td>
+                        <td style="padding: 12px 0; text-align: right;">
+                            <span style="color: #333333; font-size: 15px; font-weight: 500;">15 minutes</span>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Attendee Information Box -->
+            <div style="background-color: #e3f2fd; border-radius: 12px; padding: 20px; margin-bottom: 30px; border-left: 4px solid #2196F3;">
+                <h3 style="color: #1976D2; font-size: 16px; margin: 0 0 15px 0; font-weight: 600;">
+                    {other_person_role} Information
+                </h3>
+                <p style="color: #333333; font-size: 15px; margin: 0 0 8px 0;">
+                    <strong>Name:</strong> {other_person_name}
+                </p>
+                <p style="color: #333333; font-size: 15px; margin: 0;">
+                    <strong>Email:</strong> <a href="mailto:{other_person_email}" style="color: #2196F3; text-decoration: none;">{other_person_email}</a>
+                </p>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{calendar_url}" 
+                   style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px; margin: 10px; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);">
+                    Add to Google Calendar
+                </a>
+                
+                <a href="{meet_link}" 
+                   style="display: inline-block; background-color: #28a745; color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px; margin: 10px; box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);">
+                    Join Google Meet
+                </a>
+            </div>
+            
+            <!-- Tips Section -->
+            <div style="background-color: #e7f3ff; border-left: 4px solid #2196F3; padding: 20px; border-radius: 8px; margin-top: 30px;">
+                <h3 style="color: #1976D2; font-size: 16px; margin: 0 0 12px 0; font-weight: 600;">
+                    Quick Tips
+                </h3>
+                <ul style="color: #333333; font-size: 14px; line-height: 1.8; margin: 0; padding-left: 20px;">
+                    <li>Join 2-3 minutes early to test your audio/video</li>
+                    <li>Keep your questions ready beforehand</li>
+                    <li>Take notes during the session</li>
+                    <li>Follow up on action items discussed</li>
+                </ul>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div style="background-color: #2c3e50; padding: 30px 20px; text-align: center;">
+            <p style="color: #ecf0f1; font-size: 14px; margin: 0 0 10px 0;">
+                Need help? Contact us anytime
+            </p>
+            <p style="color: #95a5a6; font-size: 12px; margin: 0;">
+                2025 UK Jobs Mentorship Platform. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+                
+                # Create and send email
                 msg = MIMEMultipart('alternative')
                 msg['From'] = from_email
                 msg['To'] = recipient
@@ -1134,17 +1295,17 @@ def send_booking_emails(booking, user_profile, mentor):
                 
                 server.send_message(msg)
                 sent_count += 1
-                print(f"✅ Email sent to: {recipient}")
+                print(f"Email sent to: {recipient}")
                 
             except Exception as e:
-                print(f"❌ Failed to send to {recipient}: {e}")
+                print(f"Failed to send to {recipient}: {e}")
 
         server.quit()
-        print(f"📧 Emails sent: {sent_count}/{len(attendees)}")
+        print(f"Emails sent: {sent_count}/{len(attendees)}")
         return sent_count > 0
 
     except Exception as e:
-        print(f"❌ Failed to send booking emails: {e}")
+        print(f"Failed to send booking emails: {e}")
         import traceback
         traceback.print_exc()
         return False
