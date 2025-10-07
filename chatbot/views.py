@@ -1738,7 +1738,7 @@ class TimeSlotBookingView(APIView):
                     f"Date: {booking.start_time.strftime('%A, %B %d, %Y')}\n"
                     f"Time: {booking.start_time.strftime('%I:%M %p')} UK Time\n"
                     f"Meet Link: {booking.meet_link}\n\n"
-                    f"Best,\nTeam"
+                    f"\nUKJobsinsider Team"
                 )
 
                 html_body = f"""
