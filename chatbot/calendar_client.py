@@ -59,8 +59,16 @@ MENTOR_CONFIG = {
         "credentials_file": "credsam.json",  # Same file
         "meet_link": "https://meet.google.com/vbu-xbhk-dji",
         "calendar_id": "simranchetanshah98@gmail.com"
+    },
+        "vineeth": {
+        "name": "Vineeth Kumar Vellala",
+        "email": "vardaan@ukjobsinsider.com",
+        "credentials_file": "credsam.json",
+        "meet_link": "https://meet.google.com/gbv-mkux-scx",  # Update with actual meet link
+        "calendar_id": "vardaan@ukjobsinsider.com"
     }
 }
+
 
 # Fallback configuration
 DEFAULT_MENTOR_CONFIG = {

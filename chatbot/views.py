@@ -68,7 +68,7 @@ def is_cancel_request(message: str) -> bool:
         'cancel', 'cancel my', 'cancel session', 'cancel call', 'cancel meeting',
         'cancel appointment', 'cancel booking', 'dont want', 'don\'t want',
         'remove session', 'delete session', 'cancel last session',
-        'cancel my session', 'cancel my last session'
+        'cancel my session', 'cancel my last session','reschedule','reschedule my session', 'reschedule last session','reschedule my last session','reschedule the call','reschedule the session',
     ]
     
     return any(keyword in lower for keyword in cancel_keywords)
@@ -729,14 +729,17 @@ class TimeSlotListView(APIView):
                     return Response({"error": "Mentor not found"}, status=404)
             else:
                 # Default to head mentor
-                head_email = MENTOR_CONFIG.get("head", {}).get("email")
-                if not head_email:
-                    return Response({"error": "Head mentor configuration not found"}, status=500)
+                # head_email = MENTOR_CONFIG.get("head", {}).get("email")
+                # if not head_email:
+                #     return Response({"error": "Head mentor configuration not found"}, status=500)
                 
                 try:
-                    mentor = Mentor.objects.get(user__email=head_email, is_active=True)
-                except Mentor.DoesNotExist:
-                    return Response({"error": "Head mentor not found"}, status=404)
+                    mentor = Mentor.objects.filter(is_active=True).first()
+                    if not mentor:
+                        return Response({"error": "No mentors found"}, status=404)
+                except Exception as e:
+                    return Response({"error": "Error finding mentor"}, status=500)
+        
             
             # Get date range from query parameters
             start_date_str = request.GET.get('start_date')
@@ -1330,6 +1333,8 @@ UK Jobs Mentorship Team"""
             return False
 # In views.py, update the TimeSlotBookingView
 # views.py
+# Replace your TimeSlotBookingView class with this version:
+
 class TimeSlotBookingView(APIView):
     """View to book a time slot with earliest slot detection and confirmation step"""
     authentication_classes = [TokenAuthentication]
@@ -1346,23 +1351,13 @@ class TimeSlotBookingView(APIView):
             preferred_day = request.data.get('preferred_day')
             mentor_id = request.data.get('mentor_id')
             
-            # Check if first-time user
+            # Check if first-time user (kept for tracking, but doesn't affect logic)
             first_time_user = is_first_time_user(request.user)
             
-            # STEP 1: First-time users automatically get head mentor
-            if first_time_user and not slot_id:
-                return self.get_earliest_slot(request, profile, mentor_id=None, preferred_day=preferred_day)
-            
-            # STEP 2: Returning users MUST provide mentor_id
-            if not first_time_user and not mentor_id and not slot_id:
+            # STEP 1: ALL users MUST provide mentor_id
+            if not mentor_id and not slot_id:
                 # Return mentor list for selection
-                head_mentor = self.get_head_mentor()
-                
-                # Get all mentors except head mentor
-                if head_mentor:
-                    mentors = Mentor.objects.filter(is_active=True).exclude(id=head_mentor.id).select_related("user")
-                else:
-                    mentors = Mentor.objects.filter(is_active=True).select_related("user")
+                mentors = Mentor.objects.filter(is_active=True).select_related("user")
                 
                 mentor_list = [
                     {
@@ -1378,18 +1373,18 @@ class TimeSlotBookingView(APIView):
                     "message": "Please select a mentor to view available slots",
                     "action": "select_mentor",
                     "mentors": mentor_list,
-                    "is_first_time": False
+                    "is_first_time": first_time_user
                 }, status=200)
             
-            # STEP 3: If no slot_id, get earliest slot for selected mentor
+            # STEP 2: If no slot_id, get earliest slot for selected mentor
             if not slot_id:
                 return self.get_earliest_slot(request, profile, mentor_id, preferred_day)
             
-            # STEP 4: If slot_id without confirmation, show confirmation
+            # STEP 3: If slot_id without confirmation, show confirmation
             if not confirm_booking:
                 return self.show_slot_confirmation(request, slot_id)
             
-            # STEP 5: Confirm and book
+            # STEP 4: Confirm and book
             return self.confirm_booking(slot_id, profile)
             
         except UserProfile.DoesNotExist:
@@ -1399,17 +1394,6 @@ class TimeSlotBookingView(APIView):
             import traceback
             traceback.print_exc()
             return Response({"error": f"Failed to book time slot: {str(e)}"}, status=500)
-    
-    def get_head_mentor(self):
-        """Get the head mentor from MENTOR_CONFIG"""
-        head_config = MENTOR_CONFIG.get("head")
-        if not head_config or not head_config.get("email"):
-            return None
-            
-        try:
-            return Mentor.objects.get(user__email=head_config["email"], is_active=True)
-        except Mentor.DoesNotExist:
-            return None
     
     def get_earliest_slot(self, request, profile, mentor_id=None, preferred_day=None):
         """
@@ -1448,45 +1432,26 @@ class TimeSlotBookingView(APIView):
             else:
                 min_start_date = (timezone.now() + timedelta(days=1)).date()
             
-            # CASE 1: First-time users -> Always use head mentor
-            if first_time_user:
-                head_mentor = self.get_head_mentor()
-                if not head_mentor:
-                    return Response({"error": "Head mentor not found"}, status=404)
-                
-                mentor = head_mentor
-                head_name = head_mentor.get_display_name()
-                
-            # CASE 2: Returning users
+            # Get mentor by ID (NO HEAD MENTOR LOGIC)
+            if mentor_id:
+                try:
+                    mentor = Mentor.objects.get(id=mentor_id, is_active=True)
+                except Mentor.DoesNotExist:
+                    return Response({"error": "Mentor not found"}, status=404)
             else:
-                if mentor_id:
-                    try:
-                        mentor = Mentor.objects.get(id=mentor_id, is_active=True)
-                    except Mentor.DoesNotExist:
-                        return Response({"error": "Mentor not found"}, status=404)
-                else:
-                    # Get random mentor excluding head mentor
-                    head_mentor = self.get_head_mentor()
-                    all_mentors = Mentor.objects.filter(is_active=True)
-                    if head_mentor:
-                        all_mentors = all_mentors.exclude(id=head_mentor.id)
-                    
-                    if not all_mentors.exists():
-                        all_mentors = Mentor.objects.filter(is_active=True)
-                    
-                    mentor = random.choice(list(all_mentors))
+                # Random mentor selection
+                all_mentors = Mentor.objects.filter(is_active=True)
+                if not all_mentors.exists():
+                    return Response({"error": "No mentors available"}, status=404)
+                mentor = random.choice(list(all_mentors))
             
             mentor_name = mentor.get_display_name()
             end_date = min_start_date + timedelta(days=14)
             
-            # ============================================================
-            # SCENARIO A: User selected a specific day from day filter
-            # Return ALL available slots for that day (no auto-selection)
-            # ============================================================
+            # SCENARIO A: User selected a specific day
             if preferred_day:
                 print(f"User selected specific day: {preferred_day}")
                 
-                # Get ALL slots for the selected day
                 available_slots = self.get_slots_for_specific_day(
                     mentor, preferred_day, min_start_date, end_date
                 )
@@ -1507,7 +1472,6 @@ class TimeSlotBookingView(APIView):
                         "domain": getattr(request, 'domain', None)
                     }, status=200)
                 
-                # Format ALL slots for the selected day
                 slot_list = []
                 for slot in available_slots:
                     slot_list.append({
@@ -1521,13 +1485,10 @@ class TimeSlotBookingView(APIView):
                         "datetime_end": slot.datetime_end.isoformat(),
                     })
                 
-                print(f"Returning {len(slot_list)} slots for {preferred_day}")
-                
-                # Return ALL slots for user to manually select
                 return Response({
                     "message": f"Available slots for {preferred_day.title()}:",
-                    "available_slots": slot_list,  # Multiple slots
-                    "show_slot_selector": True,  # Flag to show slot selector UI
+                    "available_slots": slot_list,
+                    "show_slot_selector": True,
                     "mentor": {
                         "id": mentor.id,
                         "name": mentor_name,
@@ -1541,14 +1502,10 @@ class TimeSlotBookingView(APIView):
                     "selected_mentor_id": mentor.id
                 }, status=200)
             
-            # ============================================================
-            # SCENARIO B: Initial request (no day selected yet)
-            # Return earliest slot with yes/no confirmation
-            # ============================================================
+            # SCENARIO B: Initial request (no day selected)
             else:
                 print(f"Getting earliest slot for {mentor_name}")
                 
-                # Get next 5 available slots
                 available_slots = TimeSlot.objects.filter(
                     mentor=mentor,
                     date__gte=min_start_date,
@@ -1572,7 +1529,6 @@ class TimeSlotBookingView(APIView):
                         }
                     }, status=200)
                 
-                # Get the earliest slot
                 earliest_slot = available_slots[0]
                 
                 slot_details = {
@@ -1586,9 +1542,6 @@ class TimeSlotBookingView(APIView):
                     "datetime_end": earliest_slot.datetime_end.isoformat(),
                 }
                 
-                print(f"Returning earliest slot: {earliest_slot.date} at {earliest_slot.start_time}")
-                
-                # Return earliest slot with yes/no confirmation
                 return Response({
                     "message": f"{'Welcome! ' if first_time_user else ''}Your earliest available slot with {mentor_name} is:",
                     "earliest_slot": slot_details,
@@ -1598,11 +1551,11 @@ class TimeSlotBookingView(APIView):
                         "email": mentor.user.email,
                         "expertise": mentor.expertise
                     },
-                    "requires_confirmation": True,  # Show yes/no buttons
-                    "show_day_filter": True,  # Show day filter for "no" option
+                    "requires_confirmation": True,
+                    "show_day_filter": True,
                     "available_days": self.get_available_days(
                         mentor, min_start_date, end_date,
-                        exclude_date=earliest_slot.date  # Exclude shown slot's date
+                        exclude_date=earliest_slot.date
                     ),
                     "is_first_time": first_time_user,
                     "min_booking_date": min_start_date.isoformat(),
@@ -1621,7 +1574,6 @@ class TimeSlotBookingView(APIView):
             slot = TimeSlot.objects.get(id=slot_id)
             mentor = slot.mentor
             
-            # Check if slot is still available
             if not slot.is_available or slot.is_booked:
                 return Response({"error": "This slot is no longer available"}, status=400)
             
@@ -1657,11 +1609,9 @@ class TimeSlotBookingView(APIView):
         except Exception as e:
             print(f"❌ Error showing slot confirmation: {e}")
             return Response({"error": "Failed to show slot confirmation"}, status=500)
-    
- # Replace the email sending section in your ScheduleView.confirm_booking() method with this:
 
     def confirm_booking(self, slot_id, profile):
-        """Confirm and book the slot with mentor validation"""
+        """Confirm and book the slot - NO HEAD MENTOR VALIDATION"""
         try:
             slot = TimeSlot.objects.get(id=slot_id)
             mentor = slot.mentor
@@ -1669,29 +1619,7 @@ class TimeSlotBookingView(APIView):
             if not slot.is_available or slot.is_booked:
                 return Response({"error": "Time slot already taken"}, status=400)
 
-            # ✅ CRITICAL: Validate mentor assignment based on user history
-            first_time_user = is_first_time_user(profile.user)
-            head_mentor = self.get_head_mentor()
-            
-            if head_mentor:
-                is_head_slot = (mentor.id == head_mentor.id)
-                
-                # First-time users MUST book with head mentor
-                if first_time_user and not is_head_slot:
-                    return Response({
-                        "error": "As a first-time user, your first session must be with the head mentor.",
-                        "action": "redirect_to_head_mentor",
-                        "head_mentor_id": head_mentor.id
-                    }, status=400)
-                
-                # Returning users CANNOT book with head mentor
-                if not first_time_user and is_head_slot:
-                    return Response({
-                        "error": "You've already completed your introductory session. Please select a specialist mentor.",
-                        "action": "show_regular_mentors"
-                    }, status=400)
-
-            # Book the slot
+            # Book the slot (no mentor validation)
             booking = book_time_slot(slot.id, profile, mentor)
 
             # Send confirmation emails
@@ -1733,7 +1661,6 @@ class TimeSlotBookingView(APIView):
             except Exception as e:
                 print(f"Email sending failed: {e}")
 
-            # Return success response
             return Response({
                 "success": True,
                 "message": f"Your session with {mentor.get_display_name()} is confirmed for "
@@ -1765,10 +1692,7 @@ class TimeSlotBookingView(APIView):
             return Response({"error": f"Booking failed: {str(e)}"}, status=500)
     
     def get_available_days(self, mentor, start_date=None, end_date=None, exclude_date=None):
-        """
-        Get list of days that have available slots
-        Optionally exclude a specific date (e.g., the date of the shown earliest slot)
-        """
+        """Get list of days that have available slots"""
         try:
             if not start_date:
                 start_date = timezone.now().date()
@@ -1776,7 +1700,6 @@ class TimeSlotBookingView(APIView):
             if not end_date:
                 end_date = start_date + timedelta(days=14)
             
-            # Get all unique dates with available slots
             slots = TimeSlot.objects.filter(
                 mentor=mentor,
                 date__gte=start_date,
@@ -1785,10 +1708,8 @@ class TimeSlotBookingView(APIView):
                 is_booked=False
             ).values_list('date', flat=True).distinct()
             
-            # Format days for response
             days = []
             for slot_date in sorted(set(slots)):
-                # Exclude the date if specified (e.g., date of earliest slot already shown)
                 if exclude_date and slot_date == exclude_date:
                     continue
                 
@@ -1798,39 +1719,30 @@ class TimeSlotBookingView(APIView):
                     "formatted": slot_date.strftime('%A, %B %d')
                 })
             
-            print(f"Found {len(days)} available days for {mentor.get_display_name()}")
-            
             return days
             
         except Exception as e:
             print(f"Error getting available days: {e}")
             return []
-
     
     def get_slots_for_specific_day(self, mentor, day_name, start_date=None, end_date=None):
-        """
-        Get ALL available slots for a specific day name (e.g., 'monday')
-        Returns all unbooked slots, not just the earliest
-        """
+        """Get ALL available slots for a specific day"""
         try:
             if not start_date:
                 start_date = (timezone.now() + timedelta(days=1)).date()
             if not end_date:
                 end_date = start_date + timedelta(days=14)
             
-            # Map day names to weekday numbers
             days_map = {
                 'monday': 0, 'tuesday': 1, 'wednesday': 2,
                 'thursday': 3, 'friday': 4, 'saturday': 5, 'sunday': 6
             }
             
             if day_name.lower() not in days_map:
-                print(f"Invalid day name: {day_name}")
                 return []
             
             target_weekday = days_map[day_name.lower()]
             
-            # Find all dates that match the target weekday within range
             target_dates = []
             current_date = start_date
             while current_date <= end_date:
@@ -1838,26 +1750,18 @@ class TimeSlotBookingView(APIView):
                     target_dates.append(current_date)
                 current_date += timedelta(days=1)
             
-            print(f"Found {len(target_dates)} {day_name} dates between {start_date} and {end_date}")
-            
-            # Get ALL slots for target dates (no limit)
             slots = TimeSlot.objects.filter(
                 mentor=mentor,
                 date__in=target_dates,
                 is_available=True,
                 is_booked=False
-            ).order_by('date', 'start_time')  # No [:1] limit - return all
-            
-            print(f"Found {slots.count()} available slots for {day_name}")
+            ).order_by('date', 'start_time')
             
             return list(slots)
             
         except Exception as e:
-            print(f"Error getting slots for day {day_name}: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error getting slots for day: {e}")
             return []
-
     
     def get_available_slots_for_mentor(self, mentor, count=5):
         """Get next N available slots for mentor"""
@@ -1876,7 +1780,7 @@ class TimeSlotBookingView(APIView):
             return list(slots)
             
         except Exception as e:
-            print(f"❌ Error getting available slots: {e}")
+            print(f"Error getting available slots: {e}")
             return []
     
     # Add this new method to your view classes (TimeSlotBookingView or ScheduleView)
@@ -2425,19 +2329,40 @@ class ChatView(APIView):
                         }, status=200)
                 
                 # Fallback: show all mentors except head mentor for ALL users
+            # Fallback: show all mentors (no head mentor exclusion)
                 try:
-                    # Get head mentor to exclude from list
-                    head_mentor = None
-                    try:
-                        head_config = MENTOR_CONFIG.get("head")
-                        if head_config and head_config.get("email"):
-                            head_email = head_config["email"]
-                            try:
-                                head_mentor = Mentor.objects.get(user__email=head_email, is_active=True)
-                            except Mentor.DoesNotExist:
-                                pass  # Head mentor not found, continue with all mentors
-                    except Exception as e:
-                        print(f"❌ Error accessing head mentor configuration: {e}")
+                    # HEAD MENTOR LOGIC REMOVED - Get all active mentors
+                    mentors = Mentor.objects.filter(is_active=True).select_related("user")
+                    
+                    mentor_list = [
+                        {
+                            "id": m.id,
+                            "username": m.user.username,
+                            "email": m.user.email,
+                            "expertise": m.expertise
+                        }
+                        for m in mentors
+                    ]
+                    
+                    if not mentor_list:
+                        return Response({
+                            "reply": "⚠️ No mentors available at the moment. Please try again later.",
+                            "mentors": None
+                        }, status=200)
+                    
+                    return Response({
+                        "reply": "I can help you schedule a mentorship session. Please select a mentor:",
+                        "mentors": mentor_list,
+                        "is_first_time": False,
+                        "detected_domain": detected_domain
+                    }, status=200)
+                    
+                except Exception as e:
+                    print(f"❌ Error getting mentors: {e}")
+                    return Response({
+                        "reply": "⚠️ No mentors available at the moment. Please try again later.",
+                        "mentors": None
+                    }, status=200)
                     
                     # Get all active mentors except head mentor
                     if head_mentor:
