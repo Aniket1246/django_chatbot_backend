@@ -1283,6 +1283,7 @@ def send_booking_emails(booking, user_profile, mentor):
             <p style="color: #ecf0f1; font-size: 14px; margin: 0 0 10px 0;">
                 Need help? Contact us anytime
             </p>
+
             <p style="color: #95a5a6; font-size: 12px; margin: 0;">
                 2025 UK Jobs Mentorship Platform. All rights reserved.
             </p>

@@ -60,6 +60,91 @@ DOMAIN_KEYWORDS = {
     'finance': ['finance', 'accounting', 'investment', 'banking', 'financial analysis'],
     'hr': ['hr', 'human resources', 'recruitment', 'talent', 'people management']
 }
+BOOKING_COOLDOWN_DAYS = 14  # Production: 14 days
+BOOKING_COOLDOWN_MINUTES = 2  # Testing: 2 minutes
+USE_TESTING_COOLDOWN = False  # Set to False for production
+
+def get_last_booking_time(user):
+    """Get the timestamp of user's last confirmed booking"""
+    try:
+        # Check EnhancedSessionBooking first
+        last_booking = EnhancedSessionBooking.objects.filter(
+            user=user,
+            status='confirmed'
+        ).order_by('-created_at').first()
+        
+        if not last_booking:
+            # Fallback to old SessionBooking
+            last_booking = SessionBooking.objects.filter(
+                user=user,
+                status='confirmed'
+            ).order_by('-created_at').first()
+        
+        if last_booking:
+            return last_booking.created_at
+        
+        return None
+    except Exception as e:
+        print(f"❌ Error getting last booking time: {e}")
+        return None
+
+def check_booking_cooldown(user):
+    """
+    Check if user can book a new session
+    Returns: (can_book: bool, message: str, remaining_time: str)
+    """
+    last_booking_time = get_last_booking_time(user)
+    
+    if not last_booking_time:
+        # No previous bookings, user can book
+        return True, None, None
+    
+    # Ensure timezone-aware
+    if last_booking_time.tzinfo is None:
+        last_booking_time = timezone.make_aware(last_booking_time, UK_TZ)
+    
+    now = timezone.now()
+    
+    # Calculate cooldown period
+    if USE_TESTING_COOLDOWN:
+        cooldown_period = timedelta(minutes=BOOKING_COOLDOWN_MINUTES)
+        cooldown_text = f"{BOOKING_COOLDOWN_MINUTES} minutes"
+    else:
+        cooldown_period = timedelta(days=BOOKING_COOLDOWN_DAYS)
+        cooldown_text = f"{BOOKING_COOLDOWN_DAYS} days"
+    
+    next_allowed_time = last_booking_time + cooldown_period
+    
+    if now < next_allowed_time:
+        # Still in cooldown period
+        time_remaining = next_allowed_time - now
+        
+        if USE_TESTING_COOLDOWN:
+            # For testing: show remaining time in seconds/minutes
+            remaining_seconds = int(time_remaining.total_seconds())
+            if remaining_seconds < 60:
+                remaining_text = f"{remaining_seconds} seconds"
+            else:
+                remaining_minutes = remaining_seconds // 60
+                remaining_text = f"{remaining_minutes} minute{'s' if remaining_minutes != 1 else ''}"
+        else:
+            # For production: show remaining time in days/hours
+            remaining_days = time_remaining.days
+            remaining_hours = time_remaining.seconds // 3600
+            
+            if remaining_days > 0:
+                remaining_text = f"{remaining_days} day{'s' if remaining_days != 1 else ''}"
+                if remaining_hours > 0:
+                    remaining_text += f" and {remaining_hours} hour{'s' if remaining_hours != 1 else ''}"
+            else:
+                remaining_text = f"{remaining_hours} hour{'s' if remaining_hours != 1 else ''}"
+        
+        message = f"⏳ You can book another call after {cooldown_text}. Please wait {remaining_text} before booking again."
+        
+        return False, message, remaining_text
+    
+    # Cooldown period has passed
+    return True, None, None
 
 def is_cancel_request(message: str) -> bool:
     """Check if the message is a cancellation request"""
@@ -1345,6 +1430,23 @@ class TimeSlotBookingView(APIView):
             profile = UserProfile.objects.get(user=request.user)
             if not profile.is_premium:
                 return Response({"error": "Only Plus users can book sessions"}, status=403)
+            can_book, cooldown_message, remaining_time = check_booking_cooldown(request.user)
+
+        
+            if not can_book:
+                # Create a simple, user-friendly message
+                if USE_TESTING_COOLDOWN:
+                    # For testing: show minutes
+                    simple_message = f"⏳ You can book another call after {BOOKING_COOLDOWN_MINUTES} minutes. Please wait {remaining_time} before booking again."
+                else:
+                    # For production: show days
+                    simple_message = f"⏳ You can book another call after {BOOKING_COOLDOWN_DAYS} days. Please wait {remaining_time} before booking again."
+                
+                return Response({
+                    "error": simple_message,
+                    "cooldown_active": True,
+                    "can_book": False
+                }, status=200)
             
             slot_id = request.data.get('slot_id')
             confirm_booking = request.data.get('confirm_booking', False)
