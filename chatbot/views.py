@@ -1056,8 +1056,9 @@ class TimeSlotCancelView(APIView):
             traceback.print_exc()
             return False
 
+
 class TimeSlotRescheduleView(APIView):
-    """Reschedule a booked time slot"""
+    """Reschedule a booked time slot with unlimited rebooking and no cooldown"""
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
 
@@ -1078,7 +1079,6 @@ class TimeSlotRescheduleView(APIView):
             new_slot_id = request.data.get('new_slot_id')
             
             # 1. Find last active booking
-            # FIXED: Removed 'time_slot' from select_related
             last_booking = EnhancedSessionBooking.objects.filter(
                 user=user
             ).exclude(
@@ -1179,7 +1179,7 @@ class TimeSlotRescheduleView(APIView):
                         "error": "New slot must be with the same mentor"
                     }, status=400)
                 
-                # Free up old slots (using reverse relationship)
+                # Free up old slots
                 old_slots = last_booking.time_slots.all()
                 if old_slots.exists():
                     for old_slot in old_slots:
@@ -1203,34 +1203,13 @@ class TimeSlotRescheduleView(APIView):
                 new_slot.booking = last_booking
                 new_slot.save()
                 
-                # Update booking
+                # Update booking (WITHOUT creating new calendar event)
                 last_booking.start_time = new_slot.datetime_start
                 last_booking.end_time = new_slot.datetime_end
                 last_booking.status = "confirmed"
-                
-                # Create new calendar event
-                try:
-                    from .calendar_client import schedule_specific_slot
-                    
-                    calendar_result = schedule_specific_slot(
-                        mentor_email=mentor.user.email,
-                        student_email=user.email,
-                        start_time=new_slot.datetime_start,
-                        end_time=new_slot.datetime_end,
-                        student_name=user.first_name or user.username,
-                        mentor_name=mentor_name,
-                        session_type="Mentorship Session"
-                    )
-                    
-                    if calendar_result:
-                        last_booking.meet_link = calendar_result.get('meet_link', '')
-                        last_booking.event_id = calendar_result.get('event_id', '')
-                        last_booking.calendar_link = calendar_result.get('calendar_link', '')
-                        print(f"✅ New calendar event created")
-                    
-                except Exception as e:
-                    print(f"⚠️ Calendar creation error: {e}")
-                
+                last_booking.meet_link = last_booking.meet_link or ""
+                last_booking.event_id = ""
+                last_booking.calendar_link = ""
                 last_booking.save()
                 
                 # Format new time
@@ -1244,7 +1223,7 @@ class TimeSlotRescheduleView(APIView):
                     mentor_name=mentor_name,
                     old_time=current_time,
                     new_time=new_time,
-                    meet_link=last_booking.meet_link
+                    meet_link=last_booking.meet_link or "TBD"
                 )
                 
                 return Response({
@@ -1254,11 +1233,13 @@ class TimeSlotRescheduleView(APIView):
                         "mentor_name": mentor_name,
                         "old_time": current_time,
                         "new_time": new_time,
-                        "meet_link": last_booking.meet_link,
-                        "calendar_link": last_booking.calendar_link,
+                        "meet_link": last_booking.meet_link or "",
+                        "calendar_link": "",
                         "booking_id": last_booking.id
                     },
-                    "email_sent": email_sent
+                    "email_sent": email_sent,
+                    "unlimited_reschedule": True,
+                    "no_cooldown": True
                 }, status=200)
             
             else:
@@ -1272,6 +1253,121 @@ class TimeSlotRescheduleView(APIView):
             print(f"❌ Error rescheduling session: {e}")
             traceback.print_exc()
             return Response({"error": f"Failed to reschedule session: {str(e)}"}, status=500)
+    
+    def send_reschedule_emails(self, student_email, student_name, mentor_email, 
+                                mentor_name, old_time, new_time, meet_link):
+            """Send rescheduling confirmation emails using SMTP directly"""
+            try:
+                import smtplib
+                from email.mime.multipart import MIMEMultipart
+                from email.mime.text import MIMEText
+                from django.conf import settings
+                
+                # Student email
+                student_subject = f"📅 Session Rescheduled with {mentor_name}"
+                student_text = f"""Hi {student_name},
+
+    Your mentorship session has been rescheduled.
+
+    Previous Time: {old_time}
+    New Time: {new_time}
+
+    Meet Link: {meet_link}
+
+    Thanks,
+    UK Jobs Mentorship Team"""
+                
+                student_html = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                    <h2 style="color: #1a73e8;">📅 Session Rescheduled</h2>
+                    <p>Hi {student_name},</p>
+                    <p>Your mentorship session has been rescheduled.</p>
+                    <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <p><strong>Previous Time:</strong> {old_time}</p>
+                        <p><strong>New Time:</strong> {new_time}</p>
+                        <p><strong>Meet Link:</strong> <a href="{meet_link}" style="color: #1a73e8;">{meet_link}</a></p>
+                    </div>
+                    <p>Thanks,<br>UK Jobs Mentorship Team</p>
+                </body>
+                </html>
+                """
+                
+                # Send student email using direct SMTP
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = student_subject
+                msg['From'] = settings.EMAIL_HOST_USER
+                msg['To'] = student_email
+                
+                part1 = MIMEText(student_text, 'plain')
+                part2 = MIMEText(student_html, 'html')
+                msg.attach(part1)
+                msg.attach(part2)
+                
+                # Connect to SMTP server
+                server = smtplib.SMTP(settings.EMAIL_HOST, settings.EMAIL_PORT)
+                server.ehlo()
+                server.starttls()  # No keyfile/certfile arguments
+                server.ehlo()
+                server.login(settings.EMAIL_HOST_USER, settings.EMAIL_HOST_PASSWORD)
+                
+                # Send student email
+                server.send_message(msg)
+                print(f"✅ Reschedule email sent to student: {student_email}")
+                
+                # Mentor email
+                if mentor_email:
+                    mentor_subject = f"📅 Session Rescheduled with {student_name}"
+                    mentor_text = f"""Hi {mentor_name},
+
+    Your mentorship session with {student_name} has been rescheduled.
+
+    Previous Time: {old_time}
+    New Time: {new_time}
+
+    Meet Link: {meet_link}
+
+    Thanks,
+    UK Jobs Mentorship Team"""
+                    
+                    mentor_html = f"""
+                    <html>
+                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                        <h2 style="color: #1a73e8;">📅 Session Rescheduled</h2>
+                        <p>Hi {mentor_name},</p>
+                        <p>Your mentorship session with {student_name} has been rescheduled.</p>
+                        <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                            <p><strong>Previous Time:</strong> {old_time}</p>
+                            <p><strong>New Time:</strong> {new_time}</p>
+                            <p><strong>Meet Link:</strong> <a href="{meet_link}" style="color: #1a73e8;">{meet_link}</a></p>
+                        </div>
+                        <p>Thanks,<br>UK Jobs Mentorship Team</p>
+                    </body>
+                    </html>
+                    """
+                    
+                    msg_mentor = MIMEMultipart('alternative')
+                    msg_mentor['Subject'] = mentor_subject
+                    msg_mentor['From'] = settings.EMAIL_HOST_USER
+                    msg_mentor['To'] = mentor_email
+                    
+                    part1 = MIMEText(mentor_text, 'plain')
+                    part2 = MIMEText(mentor_html, 'html')
+                    msg_mentor.attach(part1)
+                    msg_mentor.attach(part2)
+                    
+                    server.send_message(msg_mentor)
+                    print(f"✅ Reschedule email sent to mentor: {mentor_email}")
+                
+                server.quit()
+                print("✅ All reschedule emails sent successfully")
+                return True
+                
+            except Exception as e:
+                print(f"❌ Email sending error: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
     
     def get_slots_for_day(self, mentor, day_name, start_date, end_date):
         """Get available slots for a specific day within date range"""
@@ -1333,89 +1429,103 @@ class TimeSlotRescheduleView(APIView):
             print(f"❌ Error getting available days: {e}")
             return []
     
-    def send_reschedule_emails(self, student_email, student_name, mentor_email, 
-                               mentor_name, old_time, new_time, meet_link):
-        """Send rescheduling confirmation emails"""
-        try:
-            # Student email
-            student_subject = f"📅 Session Rescheduled with {mentor_name}"
-            student_text = f"""Hi {student_name},
-
-Your mentorship session has been rescheduled.
-
-Previous Time: {old_time}
-New Time: {new_time}
-
-Meet Link: {meet_link}
-
-Thanks,
-UK Jobs Mentorship Team"""
+# def send_reschedule_emails(self, student_email, student_name, mentor_email, 
+#                             mentor_name, old_time, new_time, meet_link):
+#         """Send rescheduling confirmation emails using EmailMultiAlternatives"""
+#         try:
+#             from django.core.mail import EmailMultiAlternatives
+#             from django.conf import settings
             
-            student_html = f"""
-            <html>
-            <body>
-            <p>Hi {student_name},</p>
-            <p>Your mentorship session with <b>{mentor_name}</b> has been rescheduled.</p>
-            <p><b>Previous Time:</b> {old_time}<br>
-            <b>New Time:</b> {new_time}</p>
-            <p><b>Meet Link:</b> <a href="{meet_link}">{meet_link}</a></p>
-            <p>Thanks,<br>UK Jobs Mentorship Team</p>
-            </body>
-            </html>
-            """
-            
-            # Mentor email
-            mentor_subject = f"📅 Session Rescheduled with {student_name}"
-            mentor_text = f"""Hi {mentor_name},
+#             # Student email
+#             student_subject = f"📅 Session Rescheduled with {mentor_name}"
+#             student_text = f"""Hi {student_name},
 
-Your mentorship session with {student_name} has been rescheduled.
+# Your mentorship session has been rescheduled.
 
-Previous Time: {old_time}
-New Time: {new_time}
+# Previous Time: {old_time}
+# New Time: {new_time}
 
-Meet Link: {meet_link}
+# Meet Link: {meet_link}
 
-Thanks,
-UK Jobs Mentorship Team"""
+# Thanks,
+# UK Jobs Mentorship Team"""
             
-            mentor_html = f"""
-            <html>
-            <body>
-            <p>Hi {mentor_name},</p>
-            <p>Your mentorship session with <b>{student_name}</b> has been rescheduled.</p>
-            <p><b>Previous Time:</b> {old_time}<br>
-            <b>New Time:</b> {new_time}</p>
-            <p><b>Meet Link:</b> <a href="{meet_link}">{meet_link}</a></p>
-            <p>Thanks,<br>UK Jobs Mentorship Team</p>
-            </body>
-            </html>
-            """
+#             student_html = f"""
+#             <html>
+#             <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+#                 <h2 style="color: #1a73e8;">📅 Session Rescheduled</h2>
+#                 <p>Hi {student_name},</p>
+#                 <p>Your mentorship session has been rescheduled.</p>
+#                 <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+#                     <p><strong>Previous Time:</strong> {old_time}</p>
+#                     <p><strong>New Time:</strong> {new_time}</p>
+#                     <p><strong>Meet Link:</strong> <a href="{meet_link}" style="color: #1a73e8;">{meet_link}</a></p>
+#                 </div>
+#                 <p>Thanks,<br>UK Jobs Mentorship Team</p>
+#             </body>
+#             </html>
+#             """
             
-            # Send emails
-            student_email_msg = EmailMultiAlternatives(
-                student_subject,
-                student_text,
-                settings.DEFAULT_FROM_EMAIL,
-                [student_email]
-            )
-            student_email_msg.attach_alternative(student_html, "text/html")
-            student_email_msg.send(fail_silently=False)
+#             # Send student email
+#             email = EmailMultiAlternatives(
+#                 subject=student_subject,
+#                 body=student_text,
+#                 from_email=settings.DEFAULT_FROM_EMAIL,
+#                 to=[student_email]
+#             )
+#             email.attach_alternative(student_html, "text/html")
+#             email.send(fail_silently=False)
+#             print(f"✅ Reschedule email sent to student: {student_email}")
             
-            if mentor_email:
-                mentor_email_msg = EmailMultiAlternatives(
-                    mentor_subject,
-                    mentor_text,
-                    settings.DEFAULT_FROM_EMAIL,
-                    [mentor_email]
-                )
-                mentor_email_msg.attach_alternative(mentor_html, "text/html")
-                mentor_email_msg.send(fail_silently=False)
+#             # Mentor email
+#             if mentor_email:
+#                 mentor_subject = f"📅 Session Rescheduled with {student_name}"
+#                 mentor_text = f"""Hi {mentor_name},
+
+# Your mentorship session with {student_name} has been rescheduled.
+
+# Previous Time: {old_time}
+# New Time: {new_time}
+
+# Meet Link: {meet_link}
+
+# Thanks,
+# UK Jobs Mentorship Team"""
+                
+#                 mentor_html = f"""
+#                 <html>
+#                 <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+#                     <h2 style="color: #1a73e8;">📅 Session Rescheduled</h2>
+#                     <p>Hi {mentor_name},</p>
+#                     <p>Your mentorship session with {student_name} has been rescheduled.</p>
+#                     <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+#                         <p><strong>Previous Time:</strong> {old_time}</p>
+#                         <p><strong>New Time:</strong> {new_time}</p>
+#                         <p><strong>Meet Link:</strong> <a href="{meet_link}" style="color: #1a73e8;">{meet_link}</a></p>
+#                     </div>
+#                     <p>Thanks,<br>UK Jobs Mentorship Team</p>
+#                 </body>
+#                 </html>
+#                 """
+                
+#                 email = EmailMultiAlternatives(
+#                     subject=mentor_subject,
+#                     body=mentor_text,
+#                     from_email=settings.DEFAULT_FROM_EMAIL,
+#                     to=[mentor_email]
+#                 )
+#                 email.attach_alternative(mentor_html, "text/html")
+#                 email.send(fail_silently=False)
+#                 print(f"✅ Reschedule email sent to mentor: {mentor_email}")
             
-            return True
+#             print("✅ All reschedule emails sent successfully")
+#             return True
             
-        except Exception as e:
-            print(f"❌ Email sending error: {e}")
-            return False
+#         except Exception as e:
+#             print(f"❌ Email sending error: {e}")
+#             import traceback
+#             traceback.print_exc()
+#             return False
 # In views.py, update the TimeSlotBookingView
 # views.py
 # Replace your TimeSlotBookingView class with this version:
