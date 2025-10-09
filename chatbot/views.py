@@ -60,7 +60,7 @@ DOMAIN_KEYWORDS = {
     'finance': ['finance', 'accounting', 'investment', 'banking', 'financial analysis'],
     'hr': ['hr', 'human resources', 'recruitment', 'talent', 'people management']
 }
-BOOKING_COOLDOWN_DAYS = 14  # Production: 14 days
+BOOKING_COOLDOWN_DAYS = 7  # Production: 14 days
 BOOKING_COOLDOWN_MINUTES = 2  # Testing: 2 minutes
 USE_TESTING_COOLDOWN = False  # Set to False for production
 
@@ -105,41 +105,36 @@ def check_booking_cooldown(user):
     
     now = timezone.now()
     
-    # Calculate cooldown period
-    if USE_TESTING_COOLDOWN:
-        cooldown_period = timedelta(minutes=BOOKING_COOLDOWN_MINUTES)
-        cooldown_text = f"{BOOKING_COOLDOWN_MINUTES} minutes"
-    else:
-        cooldown_period = timedelta(days=BOOKING_COOLDOWN_DAYS)
-        cooldown_text = f"{BOOKING_COOLDOWN_DAYS} days"
-    
+    # Calculate cooldown period (7 days)
+    cooldown_period = timedelta(days=BOOKING_COOLDOWN_DAYS)
     next_allowed_time = last_booking_time + cooldown_period
     
     if now < next_allowed_time:
         # Still in cooldown period
         time_remaining = next_allowed_time - now
         
-        if USE_TESTING_COOLDOWN:
-            # For testing: show remaining time in seconds/minutes
-            remaining_seconds = int(time_remaining.total_seconds())
-            if remaining_seconds < 60:
-                remaining_text = f"{remaining_seconds} seconds"
-            else:
-                remaining_minutes = remaining_seconds // 60
-                remaining_text = f"{remaining_minutes} minute{'s' if remaining_minutes != 1 else ''}"
-        else:
-            # For production: show remaining time in days/hours
-            remaining_days = time_remaining.days
-            remaining_hours = time_remaining.seconds // 3600
-            
-            if remaining_days > 0:
-                remaining_text = f"{remaining_days} day{'s' if remaining_days != 1 else ''}"
-                if remaining_hours > 0:
-                    remaining_text += f" and {remaining_hours} hour{'s' if remaining_hours != 1 else ''}"
-            else:
-                remaining_text = f"{remaining_hours} hour{'s' if remaining_hours != 1 else ''}"
+        # Convert to days, hours, minutes
+        remaining_seconds = int(time_remaining.total_seconds())
+        remaining_days = time_remaining.days
+        remaining_hours = (time_remaining.seconds // 3600)
+        remaining_minutes = ((time_remaining.seconds % 3600) // 60)
         
-        message = f"⏳ You can book another call after {cooldown_text}. Please wait {remaining_text} before booking again."
+        # Build readable remaining time string
+        remaining_parts = []
+        if remaining_days > 0:
+            remaining_parts.append(f"{remaining_days} day{'s' if remaining_days != 1 else ''}")
+        if remaining_hours > 0:
+            remaining_parts.append(f"{remaining_hours} hour{'s' if remaining_hours != 1 else ''}")
+        if remaining_minutes > 0:
+            remaining_parts.append(f"{remaining_minutes} minute{'s' if remaining_minutes != 1 else ''}")
+        
+        # Format as "X days, Y hours and Z minutes"
+        if len(remaining_parts) > 1:
+            remaining_text = ", ".join(remaining_parts[:-1]) + " and " + remaining_parts[-1]
+        else:
+            remaining_text = remaining_parts[0] if remaining_parts else "a few seconds"
+        
+        message = f"⏳ You can book another session after 7 days. Please wait {remaining_text} before booking again."
         
         return False, message, remaining_text
     
@@ -1542,20 +1537,13 @@ class TimeSlotBookingView(APIView):
                 return Response({"error": "Only Plus users can book sessions"}, status=403)
             can_book, cooldown_message, remaining_time = check_booking_cooldown(request.user)
 
-        
             if not can_book:
-                # Create a simple, user-friendly message
-                if USE_TESTING_COOLDOWN:
-                    # For testing: show minutes
-                    simple_message = f"⏳ You can book another call after {BOOKING_COOLDOWN_MINUTES} minutes. Please wait {remaining_time} before booking again."
-                else:
-                    # For production: show days
-                    simple_message = f"⏳ You can book another call after {BOOKING_COOLDOWN_DAYS} days. Please wait {remaining_time} before booking again."
-                
+                # User is in cooldown period
                 return Response({
-                    "error": simple_message,
+                    "error": cooldown_message,  # This will be the detailed message with days/hours/minutes
                     "cooldown_active": True,
-                    "can_book": False
+                    "can_book": False,
+                    "remaining_time": remaining_time
                 }, status=200)
             
             slot_id = request.data.get('slot_id')

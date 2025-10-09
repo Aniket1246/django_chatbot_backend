@@ -1271,7 +1271,7 @@ def send_booking_emails(booking, user_profile, mentor):
                 </h3>
                 <ul style="color: #333333; font-size: 14px; line-height: 1.8; margin: 0; padding-left: 20px;">
                     <li>Join 2-3 minutes early to test your audio/video</li>
-                    <li>Keep your questions ready beforehand</li>
+                    <li>Use the <b>Add to Google Calendar</b> button above to save your call and get a reminder</li>
                     <li>Take notes during the session</li>
                     <li>Follow up on action items discussed</li>
                 </ul>

@@ -77,22 +77,43 @@ def format_meeting_summary(booking) -> str:
 
 def is_meeting_request(message: str) -> bool:
     """
-    Detect if user is asking for a session/1-on-1 call/meeting.
+    Detect if user is asking for a session/1-on-1 call/meeting/mentorship.
     Returns True if any keyword matches.
     """
-    msg = message.lower()
+    msg = message.lower().strip()
+
     patterns = [
-        r"\bsession\b",
-        r"\bone[\s\-]?on[\s\-]?one\b",
-        r"\b1[\s\-]?on[\s\-]?1\b",
-        r"\bbook (a )?(call|meeting|session)\b",
-        r"\bschedule (a )?(call|meeting|session)\b",
-        r"\bmentorship (call|session)\b",
-        r"\bvideo call\b",
-        r"\b1-1\b",   # shorthand
-        r"\bone to one\b"
+        # --- Generic booking phrases ---
+        r"\bbook( a)? (call|meeting|session|mentor|mentorship|chat)\b",
+        r"\bschedule( a)? (call|meeting|session|mentor|mentorship|chat)\b",
+        r"\b(reserve|arrange|setup|set up|fix|plan)( a)? (call|meeting|session|chat)\b",
+
+        # --- Mentorship-specific ---
+        r"\bbook( a)? mentor\b",
+        r"\bbook( a)? mentorship (call|session|meeting)?\b",
+        r"\bschedule( a)? mentorship (call|session|meeting)?\b",
+        r"\bconnect with (a )?mentor\b",
+        r"\btalk to (a )?mentor\b",
+        r"\bneed (a )?mentor\b",
+        r"\bwant (a )?mentor\b",
+
+        # --- 1-on-1 / 1:1 variants ---
+        r"\b1[\s:\-]?[oO]n[\s:\-]?1\b",         # 1on1 / 1:1 / 1-on-1
+        r"\bone[\s\-]?on[\s\-]?one\b",           # one on one
+        r"\bone to one\b",
+        r"\b1[\s:\-]?1[\s:\-]?\b",               # "1 1" or "1-1" or "1:1"
+        r"\bbook 1[\s:\-]?[1lI]\b",              # handles "book 1:11" typo too
+
+        # --- Common phrasing ---
+        r"\bmentor(ship)? (session|call|meeting|chat)\b",
+        r"\bjoin (a )?(mentor|mentorship) (session|call)\b",
+        r"\bget (a )?(mentor|guidance|session)\b",
+        r"\bstart (a )?1[\s:\-]?1\b",
+        r"\bhelp me (book|schedule) (a )?(mentor|call|session)\b"
     ]
+
     return any(re.search(p, msg) for p in patterns)
+
 
 
 def extract_duration(message: str) -> int:
